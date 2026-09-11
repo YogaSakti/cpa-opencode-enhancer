@@ -15,6 +15,50 @@ OpenCode monitors upstream traffic and requires every request to:
 CLIProxyAPI's built-in executors drop or mangle these signals. This plugin
 restores them on every request routed to an OpenCode upstream.
 
+> [!IMPORTANT]
+> **Personal project — no affiliation, no warranty, takedown on request.**
+>
+> This plugin was written for the author's own private use and is published
+> as-is. Read [Disclaimer](#disclaimer) before using it.
+
+## Disclaimer
+
+**No affiliation.** This project is an independent, personal utility. It is
+**not affiliated with, endorsed by, sponsored by, or connected to** OpenCode,
+OpenCode Zen, OpenCode Go, CLIProxyAPI, or any of their maintainers, vendors,
+or affiliates. All product names, trademarks, and logos are the property of
+their respective owners and are used here only for descriptive, nominative
+purposes.
+
+**Personal use only.** It was built to solve the author's own setup and is
+shared in case it is useful to others. It is not a product, not a service, and
+comes with no support commitment, SLA, or roadmap.
+
+**No warranty, no liability.** The software is provided "as is", without
+warranty of any kind, express or implied, including but not limited to the
+warranties of merchantability, fitness for a particular purpose, and
+non-infringement. To the maximum extent permitted by law, the author accepts
+**no responsibility or liability** for any damages, losses, account
+suspensions, service terminations, quota changes, billing consequences, data
+loss, or other harm arising from or connected to the use, misuse, or inability
+to use this software. **You run it entirely at your own risk.** You are
+responsible for complying with the terms of service of every service you route
+traffic through, including OpenCode Zen / Go and CLIProxyAPI.
+
+**Takedown / removal on request.** If you are OpenCode, CLIProxyAPI, or an
+authorized representative of either, and you want this repository (or any
+release artifact) taken down, features removed, or behaviour changed — just
+ask. Open an issue or contact the maintainer and it will be **removed or
+adjusted promptly**, no argument, no counter-claim, no pushback.
+
+**Cooperation.** Nothing here is intended to circumvent, defeat, or evade any
+provider's systems, limits, or protections, and it is not intended to enable
+abuse. If a maintainer of an affected service asks for a change, removal, or
+restriction, note that the author is happy to comply immediately.
+
+By using this software you acknowledge that you have read, understood, and
+accepted this disclaimer.
+
 ## What it does
 
 | Feature | Hook | Behavior |
