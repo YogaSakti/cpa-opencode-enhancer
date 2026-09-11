@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,8 +25,12 @@ jobs:
             go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
             -o dist/linux/amd64/opencode-enhancer.so .
 
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/linux/amd64/opencode-enhancer.so
-          generate_release_notes: true
+      - name: Create release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            dist/linux/amd64/opencode-enhancer.so \
+            --repo "${{ github.repository }}" \
+            --generate-notes \
+            --title "${{ github.ref_name }}"
