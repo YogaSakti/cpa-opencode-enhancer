@@ -1,0 +1,238 @@
+# opencode-enhancer
+
+CLIProxyAPI native plugin that makes **OpenCode Go** (`opencode.ai/zen/go/v1`)
+and **OpenCode Zen** (`opencode.ai/zen/v1`) work reliably through CLIProxyAPI.
+
+OpenCode monitors upstream traffic and requires every request to:
+
+1. carry a **stable `x-opencode-session`** per conversation (sticky routing +
+   prompt-cache affinity; requests missing it may error since 09/06),
+2. identify itself with a **real agent User-Agent** (not a generic SDK /
+   proxy name like `cli-proxy-openai-compat`),
+3. send **typical coding-agent traffic** (zen free tier rejects Codex
+   `additional_tools` input entries with HTTP 400).
+
+CLIProxyAPI's built-in executors drop or mangle these signals. This plugin
+restores them on every request routed to an OpenCode upstream.
+
+## What it does
+
+| Feature | Hook | Behavior |
+| --- | --- | --- |
+| Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
+| Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
+| User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Modes: `passthrough` (default), `static`, `map`, `template`. |
+| Zen free-tier body cleanup | `request.intercept_after` | Strips `input[]` entries of type `additional_tools` for free-tier models only. Free-tier detection is **dynamic**: any model whose final segment ends with `-free` or `:free` (configurable markers), plus explicit allow/deny lists. Paid builds (`muse-spark-1.3-contributor`) are never touched. |
+| Target detection | `scheduler.pick` + intercept | Marks auths whose provider base URL contains a marker (default `opencode.ai`), plus optional auth-prefix and model-glob matching. |
+
+## Install
+
+### 1. Build
+
+The CLIProxyAPI runtime is glibc-based. Build with CGO and a glibc toolchain
+(an alpine/musl build will fail to `dlopen`):
+
+```bash
+./build.sh                          # linux/amd64 → dist/linux/amd64/opencode-enhancer.so
+GOOS=darwin GOARCH=arm64 ./build.sh # macOS
+```
+
+### 2. Place the plugin
+
+```text
+<cliproxyapi_root>/plugins/linux/amd64/opencode-enhancer.so
+```
+
+### 3. Enable it in `config.yaml`
+
+```yaml
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    opencode-enhancer:
+      enabled: true
+      priority: 100
+```
+
+Restart CLIProxyAPI and confirm:
+
+```bash
+docker restart cli-proxy-api        # or restart the binary
+docker logs cli-proxy-api | grep opencode-enhancer
+# pluginhost: plugin registered plugin_id=opencode-enhancer ...
+```
+
+### 4. Add the credential glue (required)
+
+The plugin injects headers into the *execution headers*. Built-in executors
+only put headers on the wire that are declared in the credential's `headers:`
+map, so add `$` references on **every OpenCode credential**:
+
+```yaml
+# OpenAI-compatible provider (chat completions / responses models)
+openai-compatibility:
+  - name: "opencode-go"
+    base-url: "https://opencode.ai/zen/go/v1"
+    headers:
+      User-Agent: "$X-Opencode-User-Agent"
+      X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Client: "$X-Opencode-Client"
+    api-key-entries:
+      - api-key: "${OPENCODE_GO_API_KEY}"
+    models:
+      - name: "glm-5.3"
+        alias: "glm-5.3"
+      # ... add the models you use
+
+# Codex-style provider (responses models, e.g. muse free tier)
+codex-api-key:
+  - api-key: "${OPENCODE_ZEN_API_KEY}"
+    base-url: "https://opencode.ai/zen/v1"
+    headers:
+      X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Client: "$X-Opencode-Client"
+    models:
+      - name: "muse-free"
+        alias: "muse-free"
+```
+
+`$Name` copies the value from the (plugin-augmented) execution headers; when
+absent the header is omitted. On the codex path the host sends its own
+`codex-tui/...` User-Agent, which is already a validated agent UA, so no UA
+glue is needed there.
+
+## Configuration reference
+
+```yaml
+plugins:
+  configs:
+    opencode-enhancer:
+      enabled: true
+      priority: 100
+
+      session:
+        header_name: "x-opencode-session"   # header injected upstream
+        source_headers:                     # client headers checked, in order
+          - X-Opencode-Session
+          - Session-Id
+          - Session_id
+          - Thread-Id
+          - Thread_id
+          - X-Claude-Code-Session-Id
+          - X-DeepSeek-Harness-Session-Id
+          - X-Session-Id
+          - X-Session-Affinity
+          - X-Conversation-Id
+          - X-Thread-Id
+        hash_derived: true                  # SHA-256 derived ids before sending
+        fallback_to_body_hash: true         # hash first user turn when no header
+
+      user_agent:
+        rewrite: true
+        mode: "passthrough"                 # passthrough | static | map | template
+        value: ""                           # static mode: fixed UA for all requests
+        template: ""                        # template mode: "{name}/{version} (via cliproxy)"
+        fallback_value: "coding-agent/1.0"  # UA when the client UA is generic/empty
+        custom_ua:                          # map mode / per-client override
+          codex: "codex-cli/1.0"
+          default: "coding-agent/1.0"
+        generic_patterns: []                # extra UA substrings treated as generic
+        client_map:
+          codex: "codex"
+          claude: "claude-code"
+          opencode: "opencode"
+          generic: ""                       # empty = omit X-Opencode-Client header
+        outbound_header: "X-Opencode-User-Agent"  # header the glue maps to User-Agent
+        set_user_agent_header: false              # also set User-Agent directly
+
+      body_cleanup:
+        strip_additional_tools: true
+        free_markers: ["-free", ":free"]    # dynamic free-tier detection
+        zen_free_models: []                 # extra exact names treated as free
+        zen_paid_models: []                 # exact names never stripped (guard)
+        strip_types: ["additional_tools"]   # input[] entry types to drop
+
+      target:
+        base_url_markers: ["opencode.ai"]   # auto-match auths by provider URL
+        auth_prefixes: ["openai-compatibility:opencode:"]
+        models: []                          # optional model globs (e.g. "muse-*")
+
+      logging:
+        enabled: false                      # per-request host.log lines (default OFF)
+```
+
+## Session resolution precedence
+
+1. Native `x-opencode-session` (real OpenCode client) — authoritative, never
+   rewritten or hashed.
+2. Client session headers in `source_headers` order.
+3. CPA `canonical_session_id` metadata (host-computed stable identity).
+4. SHA-256 of the first user turn content (stable across turns of the same
+   conversation; system prompts excluded).
+5. Request id (only when a request id exists; per-call, not sticky).
+
+Derived values (2–3) are hashed when `hash_derived: true` so the client's raw
+session id never leaves the proxy.
+
+## Verified behavior
+
+Tested end-to-end against CLIProxyAPI v7.2.157 with a mock OpenCode upstream,
+then live against a production CLIProxyAPI (v7.2.157, systemd) with real
+OpenCode Zen / Go credentials:
+
+- `registered: true`, `effective_enabled: true` in `/v0/management/plugins`.
+- OpenAI-compat path: wire request carries `User-Agent: codex-tui/0.153.3`
+  (overrides the hardcoded `cli-proxy-openai-compat`), `X-Opencode-Session:
+  <sha256(client session)>`, `X-Opencode-Client: codex`.
+- Codex path: `additional_tools` stripped from `input[]` for `muse-free`;
+  preserved for `muse-spark-1.3-contributor`.
+- Target matching works with **only** `base_url_markers` set (scheduler hook
+  marks auths by provider URL; no prefix/model config needed).
+- Live, per-request observability via `host.log` (opt-in, `logging.enabled:
+  true`; **off by default**): every shaped request logs `session_source`,
+  `session`, `client_type`, `client_ua`, `outbound_ua`, `auth`, `body_cleanup`
+  to the CPA log file.
+
+### Live log example
+
+```
+opencode-enhancer: shaped auth=openai-compatibility:opencode zen:... body_cleanup=false
+  client_type=codex client_ua=codex-tui/0.153.3 outbound_ua=codex-tui/0.153.3
+  session=895dd736... session_source=header model=mimo-v2.5-free
+opencode-enhancer: shaped auth=... body_cleanup=false client_type=generic
+  client_ua=python-requests/2.31.0 outbound_ua=opencode-cliproxy/0.2.0
+  session=5fa71b73... session_source=metadata model=mimo-v2.5-free
+opencode-enhancer: shaped auth=... client_type=opencode client_ua=opencode/1.2.3
+  outbound_ua=opencode/1.2.3 session=native (preserved) session_source=native
+```
+
+`session_source` values: `header` (client session header), `metadata` (CPA
+canonical session id), `body` (first-user-turn hash), `native` (client's own
+`x-opencode-session`, preserved verbatim).
+
+## Host quirks discovered
+
+- `request.intercept_before` **replaces** the whole header set when a
+  non-empty `Headers` map is returned (`finalInterceptorHeaders`), unlike the
+  documented merge semantics. This plugin therefore does all work in
+  `request.intercept_after`, which merges.
+- On the codex path the executor applies its own device-profile `User-Agent`
+  after custom headers, so UA glue is ineffective there — but the host's
+  `codex-tui/...` UA is already a validated agent UA, so this is fine.
+- Config-only alternative for the session header: `X-Opencode-Session:
+  "$CPA-SESSION-ID"` in the credential `headers:` map works without any
+  plugin when the client sends a recognizable session header, but lacks the
+  body-hash fallback, per-client UA mapping, and zen body cleanup.
+
+## Development
+
+```bash
+go test ./...        # unit tests
+go vet ./...         # vet
+./build.sh           # build the shared library
+```
+
+## License
+
+MIT

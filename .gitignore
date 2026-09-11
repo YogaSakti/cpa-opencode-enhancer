@@ -1,0 +1,12 @@
+# Build artifacts (published as release assets instead)
+dist/
+*.so
+*.dylib
+*.dll
+*.h
+
+# Local / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

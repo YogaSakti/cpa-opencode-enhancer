@@ -1,0 +1,97 @@
+# opencode-enhancer plugin configuration example.
+# Copy the relevant block into your CLIProxyAPI config.yaml under
+# plugins.configs.opencode-enhancer.
+
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    opencode-enhancer:
+      enabled: true
+      priority: 100
+
+      # --- Session header injection ---
+      session:
+        header_name: "x-opencode-session"
+        source_headers:
+          - X-Opencode-Session
+          - Session-Id
+          - Session_id
+          - Thread-Id
+          - Thread_id
+          - X-Claude-Code-Session-Id
+          - X-DeepSeek-Harness-Session-Id
+          - X-Session-Id
+          - X-Session-Affinity
+          - X-Conversation-Id
+          - X-Thread-Id
+        hash_derived: true
+        fallback_to_body_hash: true
+
+      # --- User-Agent / client identity ---
+      user_agent:
+        rewrite: true
+        mode: "passthrough"              # passthrough | static | map | template
+        value: ""                        # static mode: explicit UA for every request
+        template: ""                     # template mode: "{name}/{version} (via cliproxy)"
+        fallback_value: "coding-agent/1.0"  # UA saat client UA generic/kosong (netral, tanpa label proxy)
+        custom_ua:                       # map mode / fallback per-client override
+          codex: "codex-cli/1.0"
+          claude: "claude-code/1.0"
+          opencode: "opencode/1.0"
+          default: "coding-agent/1.0"
+        generic_patterns: []             # extra UA substrings treated as generic
+        client_map:
+          codex: "codex"
+          claude: "claude-code"
+          opencode: "opencode"
+          generic: ""                   # kosong = header X-Opencode-Client di-omit (anti-deteksi)
+        outbound_header: "X-Opencode-User-Agent"
+        set_user_agent_header: false
+
+      # --- Zen free-tier body cleanup ---
+      body_cleanup:
+        strip_additional_tools: true
+        free_markers: ["-free", ":free"]  # dynamic free-tier detection
+        zen_free_models: []               # extra exact names treated as free
+        zen_paid_models: []               # exact names never stripped (guard)
+        strip_types: ["additional_tools"] # input[] entry types to drop
+
+      # --- Observability (default OFF) ---
+      logging:
+        enabled: false            # true = log tiap request yang di-shape ke CPA log
+
+      # --- Target detection ---
+      target:
+        base_url_markers:
+          - "opencode.ai"
+        auth_prefixes:
+          - "openai-compatibility:opencode:"
+        models: []           # optional model globs, e.g. ["muse-*"]
+
+# --- Credential glue (REQUIRED on every OpenCode credential) ---
+# The plugin injects headers into the execution headers; built-in executors
+# only send headers declared here with "$" references.
+#
+# openai-compatibility:
+#   - name: "opencode-go"
+#     base-url: "https://opencode.ai/zen/go/v1"
+#     headers:
+#       User-Agent: "$X-Opencode-User-Agent"
+#       X-Opencode-Session: "$X-Opencode-Session"
+#       X-Opencode-Client: "$X-Opencode-Client"
+#     api-key-entries:
+#       - api-key: "${OPENCODE_GO_API_KEY}"
+#     models:
+#       - name: "glm-5.3"
+#         alias: "glm-5.3"
+#
+# codex-api-key:
+#   - api-key: "${OPENCODE_ZEN_API_KEY}"
+#     base-url: "https://opencode.ai/zen/v1"
+#     headers:
+#       X-Opencode-Session: "$X-Opencode-Session"
+#       X-Opencode-Client: "$X-Opencode-Client"
+#     models:
+#       - name: "muse-free"
+#         alias: "muse-free"
