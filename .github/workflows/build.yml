@@ -1,0 +1,29 @@
+name: Build plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build Linux AMD64
+        run: |
+          mkdir -p dist/linux/amd64
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
+            -o dist/linux/amd64/opencode-enhancer.so .
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/linux/amd64/opencode-enhancer.so
+          generate_release_notes: true
