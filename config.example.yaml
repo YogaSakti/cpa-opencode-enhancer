@@ -21,13 +21,12 @@ plugins:
           - Thread_id
           - X-Claude-Code-Session-Id
           - X-DeepSeek-Harness-Session-Id
-          - X-Session-Id
           - X-Session-Affinity
-          - X-Conversation-Id
-          - X-Thread-Id
+          - X-Session-Id
           - X-Client-Request-Id
         hash_derived: true
         fallback_to_body_hash: true
+        fallback_to_request_id: false
 
       # --- User-Agent / client identity ---
       user_agent:

@@ -29,9 +29,13 @@ type sessionResult struct {
 // Derived values are hashed when session.hash_derived is enabled; native
 // values pass through untouched.
 func resolveSessionID(req RequestInterceptRequest, cfg Config, headerName string) (sessionResult, bool) {
-	// 1. Native header: the real OpenCode client is authoritative.
+	// 1. Native header: the real OpenCode client is authoritative. Values that
+	// cannot be forwarded (CRLF, oversized) fall through to the derived
+	// sources rather than being sent as a malformed upstream header.
 	if v, ok := headerValue(req.Headers, headerName); ok {
-		return sessionResult{Value: v, Source: "native", Stable: true}, true
+		if cleaned := cleanSession(v); cleaned != "" {
+			return sessionResult{Value: cleaned, Source: "native", Stable: true}, true
+		}
 	}
 
 	// 2. Configured source headers.
@@ -61,10 +65,13 @@ func resolveSessionID(req RequestInterceptRequest, cfg Config, headerName string
 		}
 	}
 
-	// 5. Request-scoped fallback. Never used as a sticky session unless the
-	// operator opts in: collapsing conversations into one session defeats
-	// per-conversation routing.
-	if req.RequestID != "" {
+	// 5. Request-scoped fallback. OFF by default (see
+	// DefaultFallbackRequestID): a request id is not a conversation id, so
+	// injecting it gives upstream a brand-new session on every request and
+	// destroys prompt-cache affinity. Opt in with
+	// session.fallback_to_request_id only to escape a hard MissingSessionID
+	// 400 when the body could not be hashed either.
+	if BoolVal(cfg.Session.FallbackRequestID, DefaultFallbackRequestID) && req.RequestID != "" {
 		if cleaned := cleanSession(req.RequestID); cleaned != "" {
 			return sessionResult{Value: cleaned, Source: "request", Stable: false}, true
 		}

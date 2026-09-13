@@ -165,13 +165,12 @@ plugins:
           - Thread_id
           - X-Claude-Code-Session-Id
           - X-DeepSeek-Harness-Session-Id
-          - X-Session-Id
           - X-Session-Affinity
-          - X-Conversation-Id
-          - X-Thread-Id
+          - X-Session-Id
           - X-Client-Request-Id
         hash_derived: true                  # SHA-256 derived ids before sending
         fallback_to_body_hash: true         # hash first user turn when no header
+        fallback_to_request_id: false       # per-request id: NOT sticky, off by default
 
       user_agent:
         rewrite: true
@@ -210,15 +209,32 @@ plugins:
 ## Session resolution precedence
 
 1. Native `x-opencode-session` (real OpenCode client) — authoritative, never
-   rewritten or hashed.
+   rewritten or hashed. A value that cannot be forwarded as a header (CRLF,
+   oversized) falls through to the derived sources instead of breaking the
+   outbound request.
 2. Client session headers in `source_headers` order.
 3. CPA `canonical_session_id` metadata (host-computed stable identity).
 4. SHA-256 of the first user turn content (stable across turns of the same
    conversation; system prompts excluded).
-5. Request id (only when a request id exists; per-call, not sticky).
+5. Request id — **off by default** (`fallback_to_request_id: false`). A request
+   id is not a conversation id: forwarding it gives upstream a new session on
+   every request and destroys prompt-cache affinity. Enable it only to escape a
+   hard `MissingSessionID` 400 when the body could not be hashed either.
 
 Derived values (2–3) are hashed when `hash_derived: true` so the client's raw
 session id never leaves the proxy.
+
+`source_headers` is ordered by how conversation-specific each header is, not
+alphabetically: `X-Session-Affinity` outranks the generic `X-Session-Id` because
+only dsh's pi-ai transport sets it and it is conversation-scoped. Two headers are
+deliberately **not** in the defaults — `X-Conversation-Id` and `X-Thread-Id` are
+proxy/server stamps that may vary per request, and because headers are consulted
+before the body-hash fallback an unstable value there would replace a stable
+session with a fresh one on every call. Add them back only if your client
+genuinely sends stable values.
+
+Request-scoped identities are marked unstable and are never used to derive a
+sticky session.
 
 ## Verified behavior
 

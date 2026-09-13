@@ -178,6 +178,72 @@ func TestSessionSourcePrecedenceRankedLast(t *testing.T) {
 	}
 }
 
+// TestSessionAffinityOutranksGenericSessionID pins the ordering fix: the dsh
+// pi-ai affinity header is conversation-scoped, the generic X-Session-Id may
+// be stamped per call, so affinity must win when both are present.
+func TestSessionAffinityOutranksGenericSessionID(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	req := RequestInterceptRequest{
+		Model:        "deepseek-v4-flash",
+		SourceFormat: "openai",
+		Headers: http.Header{
+			"X-Session-Id":       {"generic-session"},
+			"X-Session-Affinity": {"dsh-affinity"},
+		},
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
+	}
+	env := mustCall(t, m, MethodRequestInterceptAfter, req)
+	resp := decodeResult[RequestInterceptResponse](t, env)
+
+	got := resp.Headers.Get("x-opencode-session")
+	if got != hashSession("dsh-affinity") {
+		t.Fatalf("session = %q, want the affinity header to win over generic X-Session-Id", got)
+	}
+}
+
+// TestRequestIDFallbackDisabledByDefault pins that a request id is never
+// injected as a session unless explicitly opted in: it is per-call, not a
+// conversation id, so sending it upstream would destroy prompt-cache affinity.
+func TestRequestIDFallbackDisabledByDefault(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	req := RequestInterceptRequest{
+		Model:        "glm-5.3",
+		SourceFormat: "openai",
+		Headers:      http.Header{},
+		Body:         nil, // no body content to hash either
+		RequestID:    "req-123",
+		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
+	}
+	env := mustCall(t, m, MethodRequestInterceptAfter, req)
+	resp := decodeResult[RequestInterceptResponse](t, env)
+
+	if _, present := resp.Headers["x-opencode-session"]; present {
+		t.Fatalf("request id must not become a session by default, headers = %#v", resp.Headers)
+	}
+}
+
+// TestRequestIDFallbackWhenOptedIn verifies the escape hatch: enabling
+// session.fallback_to_request_id injects the request id so a session-requiring
+// upstream does not hard-fail when the body is unhashable.
+func TestRequestIDFallbackWhenOptedIn(t *testing.T) {
+	m := newConfiguredManager(t, "session:\n  fallback_to_request_id: true\ntarget:\n  base_url_markers: [opencode.ai]\n")
+	req := RequestInterceptRequest{
+		Model:        "glm-5.3",
+		SourceFormat: "openai",
+		Headers:      http.Header{},
+		Body:         nil,
+		RequestID:    "req-456",
+		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
+	}
+	env := mustCall(t, m, MethodRequestInterceptAfter, req)
+	resp := decodeResult[RequestInterceptResponse](t, env)
+
+	if got := resp.Headers.Get("x-opencode-session"); got != "req-456" {
+		t.Fatalf("session = %q, want the opted-in request id", got)
+	}
+}
+
 func TestNativeSessionIsNeverOverriddenOrHashed(t *testing.T) {
 	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
 	req := RequestInterceptRequest{

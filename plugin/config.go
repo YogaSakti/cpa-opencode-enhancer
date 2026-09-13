@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.3.1"
+	PluginVersion = "0.3.2"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -24,6 +24,11 @@ const (
 	DefaultSessionHeaderName = "x-opencode-session"
 	DefaultHashDerived       = true
 	DefaultFallbackBodyHash  = true
+	// DefaultFallbackRequestID is OFF: a request id is never a conversation
+	// id, so forwarding it creates a fresh upstream session per request and
+	// kills prompt-cache affinity. Only enable it to dodge a hard
+	// MissingSessionID 400 when the body cannot be hashed either.
+	DefaultFallbackRequestID = false
 	DefaultRewriteUA         = true
 	DefaultStripTools        = true
 	// DefaultLogEnabled keeps host.log observability OFF unless explicitly
@@ -48,10 +53,11 @@ type LoggingConfig struct {
 
 // SessionConfig controls session header injection.
 type SessionConfig struct {
-	HeaderName       string   `yaml:"header_name"`
-	SourceHeaders    []string `yaml:"source_headers"`
-	HashDerived      *bool    `yaml:"hash_derived"`
-	FallbackBodyHash *bool    `yaml:"fallback_to_body_hash"`
+	HeaderName        string   `yaml:"header_name"`
+	SourceHeaders     []string `yaml:"source_headers"`
+	HashDerived       *bool    `yaml:"hash_derived"`
+	FallbackBodyHash  *bool    `yaml:"fallback_to_body_hash"`
+	FallbackRequestID *bool    `yaml:"fallback_to_request_id"`
 }
 
 // UserAgentConfig controls user-agent rewrite.
@@ -88,6 +94,7 @@ type TargetConfig struct {
 func DefaultConfig() Config {
 	hashDerived := DefaultHashDerived
 	fallbackBody := DefaultFallbackBodyHash
+	fallbackReqID := DefaultFallbackRequestID
 	rewriteUA := DefaultRewriteUA
 	stripTools := DefaultStripTools
 	logEnabled := DefaultLogEnabled
@@ -103,18 +110,26 @@ func DefaultConfig() Config {
 				"Thread_id",
 				"X-Claude-Code-Session-Id",
 				"X-DeepSeek-Harness-Session-Id",
-				"X-Session-Id",
+				// X-Session-Affinity ranks above X-Session-Id: it is set only by
+				// dsh's pi-ai transport and is conversation-specific, while the
+				// generic X-Session-Id may be stamped per call by other tools.
 				"X-Session-Affinity",
-				"X-Conversation-Id",
-				"X-Thread-Id",
+				"X-Session-Id",
+				// Deliberately EXCLUDED from the defaults: X-Conversation-Id /
+				// X-Thread-Id are proxy/server stamps (not client conversation
+				// ids) and may vary per request, which would override the
+				// stable body-hash fallback with an unstable session. Add them
+				// back only when the client genuinely sends stable values.
+				//
 				// Last resort: dsh pi-ai openai-responses stamps the session
 				// id here (alongside x-session-affinity/x-session-id, which
 				// those clients may not use). Ranked last because other
 				// tools set it per call.
 				"X-Client-Request-Id",
 			},
-			HashDerived:      &hashDerived,
-			FallbackBodyHash: &fallbackBody,
+			HashDerived:       &hashDerived,
+			FallbackBodyHash:  &fallbackBody,
+			FallbackRequestID: &fallbackReqID,
 		},
 		UserAgent: UserAgentConfig{
 			Rewrite:         &rewriteUA,
