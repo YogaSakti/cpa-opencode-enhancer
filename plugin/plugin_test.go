@@ -132,6 +132,52 @@ func TestSessionFromCodexHeaderIsHashed(t *testing.T) {
 	}
 }
 
+// TestSessionFallsBackToClientRequestID covers the last-resort source header:
+// dsh's pi-ai openai-responses path stamps the conversation id there when the
+// client's own affinity/session headers are withheld, so without it those
+// requests carry no session at all.
+func TestSessionFallsBackToClientRequestID(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	req := RequestInterceptRequest{
+		Model:        "deepseek-v4-flash",
+		SourceFormat: "openai",
+		Headers:      http.Header{"X-Client-Request-Id": {"dsh-conv-xyz"}},
+		Body:         []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
+	}
+	env := mustCall(t, m, MethodRequestInterceptAfter, req)
+	resp := decodeResult[RequestInterceptResponse](t, env)
+
+	got := resp.Headers.Get("x-opencode-session")
+	if got != hashSession("dsh-conv-xyz") {
+		t.Fatalf("session = %q, want sha256 of the client request id", got)
+	}
+}
+
+// TestSessionSourcePrecedenceRankedLast pins the ordering: a client request id
+// is a per-call value for most tools, so any recognized conversation header
+// must outrank it.
+func TestSessionSourcePrecedenceRankedLast(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	req := RequestInterceptRequest{
+		Model:        "deepseek-v4-flash",
+		SourceFormat: "openai",
+		Headers: http.Header{
+			"X-Client-Request-Id":           {"per-call-noisy"},
+			"X-DeepSeek-Harness-Session-Id": {"conversation-stable"},
+		},
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
+	}
+	env := mustCall(t, m, MethodRequestInterceptAfter, req)
+	resp := decodeResult[RequestInterceptResponse](t, env)
+
+	got := resp.Headers.Get("x-opencode-session")
+	if got != hashSession("conversation-stable") {
+		t.Fatalf("session = %q, want the harness session header to win", got)
+	}
+}
+
 func TestNativeSessionIsNeverOverriddenOrHashed(t *testing.T) {
 	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
 	req := RequestInterceptRequest{

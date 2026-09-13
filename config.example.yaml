@@ -25,6 +25,7 @@ plugins:
           - X-Session-Affinity
           - X-Conversation-Id
           - X-Thread-Id
+          - X-Client-Request-Id
         hash_derived: true
         fallback_to_body_hash: true
 

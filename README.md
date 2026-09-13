@@ -169,6 +169,7 @@ plugins:
           - X-Session-Affinity
           - X-Conversation-Id
           - X-Thread-Id
+          - X-Client-Request-Id
         hash_derived: true                  # SHA-256 derived ids before sending
         fallback_to_body_hash: true         # hash first user turn when no header
 

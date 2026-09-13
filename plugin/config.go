@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.3.0"
+	PluginVersion = "0.3.1"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -107,6 +107,11 @@ func DefaultConfig() Config {
 				"X-Session-Affinity",
 				"X-Conversation-Id",
 				"X-Thread-Id",
+				// Last resort: dsh pi-ai openai-responses stamps the session
+				// id here (alongside x-session-affinity/x-session-id, which
+				// those clients may not use). Ranked last because other
+				// tools set it per call.
+				"X-Client-Request-Id",
 			},
 			HashDerived:      &hashDerived,
 			FallbackBodyHash: &fallbackBody,
