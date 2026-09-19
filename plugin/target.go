@@ -48,48 +48,37 @@ func isTarget(req RequestInterceptRequest, cfg Config) bool {
 		}
 	}
 
-	// If no models specified and no markers matched, default to false.
-	// The scheduler hook will have pre-marked known OpenCode auths.
 	return false
-}
-
-// isKnownOpenCodeAuth checks if an auth ID was pre-marked by the scheduler hook.
-func isKnownOpenCodeAuth(authID string, known map[string]struct{}) bool {
-	if authID == "" {
-		return false
-	}
-	_, ok := known[authID]
-	return ok
 }
 
 // isZenFreeTierModel reports whether a model is a free-tier variant, using a
 // dynamic marker match rather than a hardcoded model list:
 //
-//  1. an explicit zen_paid_models entry always wins (never stripped) — a
-//     guard for paid builds that happen to carry a marker;
-//  2. an explicit zen_free_models entry is treated as free (escape hatch for
+//  1. an explicit paid_models entry always wins — a guard for paid builds
+//     that happen to carry a marker;
+//  2. an explicit free_models entry is treated as free (escape hatch for
 //     free models with no marker);
-//  3. otherwise the model's final segment is checked for any free_markers
+//  3. otherwise the model's final segment is checked for any markers
 //     suffix (default "-free" and ":free").
 //
 // Provider prefixes ("opencode-go/muse-free") are stripped before matching,
 // and the comparison is case-insensitive.
-func isZenFreeTierModel(model string, cfg BodyCleanConfig) bool {
+func isZenFreeTierModel(model string, cfg FreeTierConfig) bool {
 	m := lastSegment(model)
 	if m == "" {
 		return false
 	}
-	for _, paid := range cfg.ZenPaidModels {
+	for _, paid := range cfg.PaidModels {
 		if p := lastSegment(paid); p != "" && m == p {
 			return false
 		}
 	}
-	for _, free := range cfg.ZenFreeModels {
+	for _, free := range cfg.FreeModels {
 		if f := lastSegment(free); f != "" && m == f {
 			return true
 		}
 	}
-	for _, marker := range cfg.FreeMarkers {
+	for _, marker := range cfg.Markers {
 		mk := strings.ToLower(strings.TrimSpace(marker))
 		if mk != "" && strings.HasSuffix(m, mk) {
 			return true

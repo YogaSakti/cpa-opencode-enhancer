@@ -67,7 +67,6 @@ accepted this disclaimer.
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Modes: `passthrough` (default), `static`, `map`, `template`. |
-| Zen free-tier body cleanup | `request.intercept_after` | Strips `input[]` entries of type `additional_tools` for free-tier models only. Free-tier detection is **dynamic**: any model whose final segment ends with `-free` or `:free` (configurable markers), plus explicit allow/deny lists. Paid builds (`muse-spark-1.3-contributor`) are never touched. |
 | Target detection | `scheduler.pick` + intercept | Marks auths whose provider base URL contains a marker (default `opencode.ai`), plus optional auth-prefix and model-glob matching. |
 
 ## Install
@@ -193,6 +192,24 @@ absent the header is omitted. On the codex path the host sends its own
 `codex-tui/...` User-Agent, which is already a validated agent UA, so no UA
 glue is needed there.
 
+## Breaking changes in 0.5.0
+
+Config keys removed or renamed. Nothing below had a demonstrated effect, and
+all of it is optional, so a config that sets none of it needs no migration.
+
+| Was | Now |
+| --- | --- |
+| `body_cleanup:` | `free_tier:` — it no longer cleans anything, it only classifies free vs paid |
+| `body_cleanup.free_markers` | `free_tier.markers` |
+| `body_cleanup.zen_free_models` / `zen_paid_models` | `free_tier.free_models` / `paid_models` |
+| `body_cleanup.strip_additional_tools` / `strip_types` | removed — it only fired on the codex path, which rejects every free-tier request anyway |
+| `user_agent.mode` / `value` / `template` / `custom_ua` / `generic_patterns` | removed — the fingerprint path ignores them, and the paid path is proven to need no UA shaping |
+| `session.fallback_to_request_id` | removed — a request id is not a conversation id; the fingerprint path has its own inline fallback |
+
+The `scheduler` capability is gone too: it marked auths by a `base_url` the
+host never puts in that metadata, and targeting works by auth-id substring.
+The log field `body_cleanup=` is now `body_shaped=`, which is what it reports.
+
 ## Configuration reference
 
 Every key below is optional and shown at its default. Set one only to override
@@ -220,25 +237,17 @@ plugins:
           - X-Client-Request-Id
         hash_derived: true                  # SHA-256 derived ids before sending
         fallback_to_body_hash: true         # hash first user turn when no header
-        fallback_to_request_id: false       # per-request id: NOT sticky, off by default
 
-      user_agent:
+      user_agent:                         # non-fingerprint (paid) path only
         rewrite: true
-        mode: "passthrough"                 # passthrough | static | map | template
-        value: ""                           # static mode: fixed UA for all requests
-        template: ""                        # template mode: "{name}/{version} (via cliproxy)"
-        fallback_value: "coding-agent/1.0"  # UA when the client UA is generic/empty
-        custom_ua:                          # map mode / per-client override
-          codex: "codex-cli/1.0"
-          default: "coding-agent/1.0"
-        generic_patterns: []                # extra UA substrings treated as generic
+        fallback_value: "coding-agent/1.0"  # UA when the client's own is a generic SDK one
         client_map:
           codex: "codex"
           claude: "claude-code"
           opencode: "opencode"
-          generic: ""                       # empty = omit X-Opencode-Client header
-        outbound_header: "X-Opencode-User-Agent"  # header the glue maps to User-Agent
-        set_user_agent_header: false              # also set User-Agent directly
+          generic: ""                       # empty = omit X-Opencode-Client
+        outbound_header: "X-Opencode-User-Agent"
+        set_user_agent_header: false
 
       fingerprint:
         enabled: true                     # send the official client fingerprint
@@ -252,12 +261,10 @@ plugins:
         warn_missing_glue: true           # log required credential headers: once per auth
         free_only: true                   # paid builds are never reshaped
 
-      body_cleanup:
-        strip_additional_tools: true
-        free_markers: ["-free", ":free"]    # dynamic free-tier detection
-        zen_free_models: []                 # extra exact names treated as free
-        zen_paid_models: []                 # exact names never stripped (guard)
-        strip_types: ["additional_tools"]   # input[] entry types to drop
+      free_tier:                          # classifies free vs paid; gates everything
+        markers: ["-free", ":free"]
+        free_models: []                     # exact names to treat as free
+        paid_models: []                     # exact names never reshaped (guard)
 
       target:
         base_url_markers: ["opencode.ai"]   # auto-match auths by provider URL
@@ -278,11 +285,6 @@ plugins:
 3. CPA `canonical_session_id` metadata (host-computed stable identity).
 4. SHA-256 of the first user turn content (stable across turns of the same
    conversation; system prompts excluded).
-5. Request id — **off by default** (`fallback_to_request_id: false`). A request
-   id is not a conversation id: forwarding it gives upstream a new session on
-   every request and destroys prompt-cache affinity. Enable it only to escape a
-   hard `MissingSessionID` 400 when the body could not be hashed either.
-
 Derived values (2–3) are hashed when `hash_derived: true` so the client's raw
 session id never leaves the proxy.
 
@@ -314,16 +316,16 @@ OpenCode Zen / Go credentials:
   marks auths by provider URL; no prefix/model config needed).
 - Live, per-request observability via `host.log` (opt-in, `logging.enabled:
   true`; **off by default**): every shaped request logs `session_source`,
-  `session`, `client_type`, `client_ua`, `outbound_ua`, `auth`, `body_cleanup`
+  `session`, `client_type`, `client_ua`, `outbound_ua`, `auth`, `body_shaped`
   to the CPA log file.
 
 ### Live log example
 
 ```
-opencode-enhancer: shaped auth=openai-compatibility:opencode zen:... body_cleanup=false
+opencode-enhancer: shaped auth=openai-compatibility:opencode zen:... body_shaped=false
   client_type=codex client_ua=codex-tui/0.153.3 outbound_ua=codex-tui/0.153.3
   session=895dd736... session_source=header model=mimo-v2.5-free
-opencode-enhancer: shaped auth=... body_cleanup=false client_type=generic
+opencode-enhancer: shaped auth=... body_shaped=false client_type=generic
   client_ua=python-requests/2.31.0 outbound_ua=opencode-cliproxy/0.2.0
   session=5fa71b73... session_source=metadata model=mimo-v2.5-free
 opencode-enhancer: shaped auth=... client_type=opencode client_ua=opencode/1.2.3

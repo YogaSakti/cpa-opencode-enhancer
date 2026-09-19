@@ -71,7 +71,7 @@ func TestRegistrationAdvertisesCapabilities(t *testing.T) {
 	if reg.SchemaVersion != 1 {
 		t.Fatalf("schema_version = %d, want 1", reg.SchemaVersion)
 	}
-	if !reg.Capabilities.RequestInterceptor || !reg.Capabilities.Scheduler {
+	if !reg.Capabilities.RequestInterceptor {
 		t.Fatalf("capabilities = %+v, want request_interceptor and scheduler", reg.Capabilities)
 	}
 	if reg.Metadata.GitHubRepository == "" {
@@ -136,24 +136,6 @@ func TestSessionFromCodexHeaderIsHashed(t *testing.T) {
 // dsh's pi-ai openai-responses path stamps the conversation id there when the
 // client's own affinity/session headers are withheld, so without it those
 // requests carry no session at all.
-func TestSessionFallsBackToClientRequestID(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model:        "deepseek-v4-flash",
-		SourceFormat: "openai",
-		Headers:      http.Header{"X-Client-Request-Id": {"dsh-conv-xyz"}},
-		Body:         []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
-		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	got := resp.Headers.Get("x-opencode-session")
-	if got != hashSession("dsh-conv-xyz") {
-		t.Fatalf("session = %q, want sha256 of the client request id", got)
-	}
-}
-
 // TestSessionSourcePrecedenceRankedLast pins the ordering: a client request id
 // is a per-call value for most tools, so any recognized conversation header
 // must outrank it.
@@ -205,45 +187,9 @@ func TestSessionAffinityOutranksGenericSessionID(t *testing.T) {
 // TestRequestIDFallbackDisabledByDefault pins that a request id is never
 // injected as a session unless explicitly opted in: it is per-call, not a
 // conversation id, so sending it upstream would destroy prompt-cache affinity.
-func TestRequestIDFallbackDisabledByDefault(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model:        "glm-5.3",
-		SourceFormat: "openai",
-		Headers:      http.Header{},
-		Body:         nil, // no body content to hash either
-		RequestID:    "req-123",
-		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if _, present := resp.Headers["x-opencode-session"]; present {
-		t.Fatalf("request id must not become a session by default, headers = %#v", resp.Headers)
-	}
-}
-
 // TestRequestIDFallbackWhenOptedIn verifies the escape hatch: enabling
 // session.fallback_to_request_id injects the request id so a session-requiring
 // upstream does not hard-fail when the body is unhashable.
-func TestRequestIDFallbackWhenOptedIn(t *testing.T) {
-	m := newConfiguredManager(t, "session:\n  fallback_to_request_id: true\ntarget:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model:        "glm-5.3",
-		SourceFormat: "openai",
-		Headers:      http.Header{},
-		Body:         nil,
-		RequestID:    "req-456",
-		Metadata:     map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if got := resp.Headers.Get("x-opencode-session"); got != "req-456" {
-		t.Fatalf("session = %q, want the opted-in request id", got)
-	}
-}
-
 func TestNativeSessionIsNeverOverriddenOrHashed(t *testing.T) {
 	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
 	req := RequestInterceptRequest{
@@ -372,54 +318,6 @@ func TestUserAgentPassthroughFallsBackForGenericUA(t *testing.T) {
 	}
 }
 
-func TestUserAgentStaticMode(t *testing.T) {
-	m := newConfiguredManager(t, "user_agent:\n  mode: static\n  value: my-agent/1.0\ntarget:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model:    "glm-5.3",
-		Headers:  http.Header{"Session-Id": {"s1"}},
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if got := resp.Headers.Get(DefaultOutboundUAHeader); got != "my-agent/1.0" {
-		t.Fatalf("outbound UA = %q, want my-agent/1.0", got)
-	}
-}
-
-func TestUserAgentMapMode(t *testing.T) {
-	m := newConfiguredManager(t, "user_agent:\n  mode: map\n  custom_ua:\n    codex: codex-tui/0.154.0\n    default: generic-agent/1.0\ntarget:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model:    "glm-5.3",
-		Headers:  http.Header{"Session-Id": {"s1"}},
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if got := resp.Headers.Get(DefaultOutboundUAHeader); got != "codex-tui/0.154.0" {
-		t.Fatalf("outbound UA = %q, want codex-tui/0.154.0", got)
-	}
-}
-
-func TestUserAgentTemplateMode(t *testing.T) {
-	m := newConfiguredManager(t, "user_agent:\n  mode: template\n  template: \"{name}/{version} (via cliproxy)\"\ntarget:\n  base_url_markers: [opencode.ai]\n")
-	req := RequestInterceptRequest{
-		Model: "glm-5.3",
-		Headers: http.Header{
-			"Session-Id": {"s1"},
-			"User-Agent": {"codex-tui/0.153.3 (Mac OS X)"},
-		},
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if got := resp.Headers.Get(DefaultOutboundUAHeader); got != "codex-tui/0.153.3 (via cliproxy)" {
-		t.Fatalf("outbound UA = %q, want template result", got)
-	}
-}
-
 func TestUserAgentFallbackValueOverride(t *testing.T) {
 	m := newConfiguredManager(t, "user_agent:\n  fallback_value: my-agent/2.0\ntarget:\n  base_url_markers: [opencode.ai]\n")
 	req := RequestInterceptRequest{
@@ -474,56 +372,11 @@ func TestDetectClientType(t *testing.T) {
 
 // --- body cleanup --------------------------------------------------------
 
-func TestStripAdditionalTools(t *testing.T) {
-	m := newConfiguredManager(t, "")
-	body := []byte(`{"model":"muse-free","input":[{"type":"additional_tools","tools":[]},{"type":"message","role":"user","content":"hi"}],"stream":true}`)
-	req := RequestInterceptRequest{
-		Model:    "muse-free",
-		Headers:  http.Header{},
-		Body:     body,
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if len(resp.Body) == 0 {
-		t.Fatal("body was not rewritten")
-	}
-	var out map[string]any
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("decode rewritten body: %v", err)
-	}
-	items, _ := out["input"].([]any)
-	if len(items) != 1 {
-		t.Fatalf("input length = %d, want 1 (additional_tools stripped)", len(items))
-	}
-	if out["stream"] != true {
-		t.Fatal("unrelated top-level fields must be preserved")
-	}
-}
-
-func TestStripAdditionalToolsOnlyForFreeTier(t *testing.T) {
-	m := newConfiguredManager(t, "")
-	body := []byte(`{"input":[{"type":"additional_tools"},{"type":"message"}]}`)
-	req := RequestInterceptRequest{
-		Model:    "muse-spark-1.3-contributor", // paid build: must be untouched
-		Headers:  http.Header{},
-		Body:     body,
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode:1"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if len(resp.Body) != 0 {
-		t.Fatalf("paid model body must not be rewritten, got %s", resp.Body)
-	}
-}
-
 func TestIsZenFreeTierModelDynamicMarkers(t *testing.T) {
-	cfg := BodyCleanConfig{
-		FreeMarkers:   []string{"-free", ":free"},
-		ZenFreeModels: []string{},
-		ZenPaidModels: []string{},
+	cfg := FreeTierConfig{
+		Markers:    []string{"-free", ":free"},
+		FreeModels: []string{},
+		PaidModels: []string{},
 	}
 	cases := map[string]bool{
 		"muse-free":                       true,
@@ -544,10 +397,10 @@ func TestIsZenFreeTierModelDynamicMarkers(t *testing.T) {
 }
 
 func TestIsZenFreeTierModelPaidOverride(t *testing.T) {
-	cfg := BodyCleanConfig{
-		FreeMarkers:   []string{"-free"},
-		ZenFreeModels: []string{},
-		ZenPaidModels: []string{"muse-spark-1.3-contributor-free"},
+	cfg := FreeTierConfig{
+		Markers:    []string{"-free"},
+		FreeModels: []string{},
+		PaidModels: []string{"muse-spark-1.3-contributor-free"},
 	}
 	// Even though it ends in -free, the paid override wins
 	if got := isZenFreeTierModel("muse-spark-1.3-contributor-free", cfg); got {
@@ -556,10 +409,10 @@ func TestIsZenFreeTierModelPaidOverride(t *testing.T) {
 }
 
 func TestIsZenFreeTierModelExplicitFreeList(t *testing.T) {
-	cfg := BodyCleanConfig{
-		FreeMarkers:   []string{},
-		ZenFreeModels: []string{"custom-free-model"},
-		ZenPaidModels: []string{},
+	cfg := FreeTierConfig{
+		Markers:    []string{},
+		FreeModels: []string{"custom-free-model"},
+		PaidModels: []string{},
 	}
 	if got := isZenFreeTierModel("custom-free-model", cfg); !got {
 		t.Fatal("explicit zen_free_models entry must be treated as free")
@@ -598,58 +451,6 @@ func TestTargetByModelGlob(t *testing.T) {
 	}
 }
 
-// --- scheduler -----------------------------------------------------------
-
-func TestSchedulerMarksOpenCodeAuthsAndDelegates(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
-	req := SchedulerPickRequest{
-		Candidates: []SchedulerAuthCandidate{
-			{ID: "openai-compatibility:opencode:1", Attributes: map[string]string{"base_url": "https://opencode.ai/zen/go/v1"}},
-			{ID: "openai-compatibility:other:2", Attributes: map[string]string{"base_url": "https://api.other.ai/v1"}},
-			{ID: "meta-auth", Metadata: map[string]any{"base_url": "https://opencode.ai/zen/v1"}},
-		},
-	}
-	env := mustCall(t, m, MethodSchedulerPick, req)
-	resp := decodeResult[SchedulerPickResponse](t, env)
-
-	if resp.Handled {
-		t.Fatal("scheduler must delegate to the built-in scheduler (Handled=false)")
-	}
-
-	m.mu.RLock()
-	_, marked := m.knownAuths["openai-compatibility:opencode:1"]
-	_, markedMeta := m.knownAuths["meta-auth"]
-	_, otherMarked := m.knownAuths["openai-compatibility:other:2"]
-	m.mu.RUnlock()
-
-	if !marked || !markedMeta {
-		t.Fatalf("opencode auths not marked: %#v", m.knownAuths)
-	}
-	if otherMarked {
-		t.Fatalf("non-opencode auth marked: %#v", m.knownAuths)
-	}
-}
-
-func TestSchedulerMarkedAuthEnablesInjectionWithoutPrefixMatch(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n  auth_prefixes: [\"never-matches:\"]\n")
-	mustCall(t, m, MethodSchedulerPick, SchedulerPickRequest{
-		Candidates: []SchedulerAuthCandidate{
-			{ID: "codex-api-key:***", Attributes: map[string]string{"base_url": "https://opencode.ai/zen/v1"}},
-		},
-	})
-	req := RequestInterceptRequest{
-		Model:    "mimo-free",
-		Headers:  http.Header{"X-DeepSeek-Harness-Session-Id": {"dsh-1"}},
-		Metadata: map[string]any{"selected_auth_id": "codex-api-key:***"},
-	}
-	env := mustCall(t, m, MethodRequestInterceptAfter, req)
-	resp := decodeResult[RequestInterceptResponse](t, env)
-
-	if resp.Headers.Get("x-opencode-session") == "" {
-		t.Fatal("scheduler-marked auth did not enable injection")
-	}
-}
-
 // --- config --------------------------------------------------------------
 
 func TestConfigValidationRejectsEmptyTargets(t *testing.T) {
@@ -678,9 +479,6 @@ func TestLoadConfigDefaultsAndOverrides(t *testing.T) {
 	}
 	if BoolVal(cfg.Session.HashDerived, true) {
 		t.Fatal("hash_derived override to false did not apply")
-	}
-	if cfg.UserAgent.Mode != DefaultUAMode {
-		t.Fatalf("user_agent.mode = %q, want default %q", cfg.UserAgent.Mode, DefaultUAMode)
 	}
 	if cfg.UserAgent.OutboundHeader != DefaultOutboundUAHeader {
 		t.Fatalf("outbound_header = %q, want default", cfg.UserAgent.OutboundHeader)
@@ -771,27 +569,6 @@ func TestLoggingEnabledWhenConfigured(t *testing.T) {
 
 // --- parseUserAgent / isGenericUserAgent ---------------------------------
 
-func TestParseUserAgent(t *testing.T) {
-	cases := []struct {
-		ua          string
-		wantName    string
-		wantVersion string
-	}{
-		{"codex-tui/0.153.3 (Mac OS X)", "codex-tui", "0.153.3"},
-		{"claude-cli/2.2.0 (external, cli)", "claude-cli", "2.2.0"},
-		{"opencode-client/1.0", "opencode-client", "1.0"},
-		{"curl/8.0.1", "curl", "8.0.1"},
-		{"", "", ""},
-		{"no-slash", "no-slash", ""},
-	}
-	for _, tc := range cases {
-		name, version := parseUserAgent(tc.ua)
-		if name != tc.wantName || version != tc.wantVersion {
-			t.Fatalf("parseUserAgent(%q) = (%q, %q), want (%q, %q)", tc.ua, name, version, tc.wantName, tc.wantVersion)
-		}
-	}
-}
-
 func TestIsGenericUserAgent(t *testing.T) {
 	cases := []struct {
 		ua   string
@@ -808,16 +585,8 @@ func TestIsGenericUserAgent(t *testing.T) {
 		{"ab", true},
 	}
 	for _, tc := range cases {
-		if got := isGenericUserAgent(tc.ua, nil); got != tc.want {
+		if got := isGenericUserAgent(tc.ua); got != tc.want {
 			t.Fatalf("isGenericUserAgent(%q) = %t, want %t", tc.ua, got, tc.want)
 		}
-	}
-}
-
-func TestApplyUATemplate(t *testing.T) {
-	got := applyUATemplate("{name}/{version} (via {client})", "codex-tui", "0.153.3", "codex")
-	want := "codex-tui/0.153.3 (via codex)"
-	if got != want {
-		t.Fatalf("applyUATemplate = %q, want %q", got, want)
 	}
 }

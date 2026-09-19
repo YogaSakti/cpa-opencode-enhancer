@@ -37,23 +37,6 @@ type RequestInterceptResponse struct {
 	Body    []byte      `json:"Body,omitempty"`
 }
 
-// SchedulerPickRequest mirrors pluginapi.SchedulerPickRequest.
-type SchedulerPickRequest struct {
-	Candidates []SchedulerAuthCandidate `json:"Candidates"`
-}
-
-// SchedulerAuthCandidate mirrors pluginapi.SchedulerAuthCandidate.
-type SchedulerAuthCandidate struct {
-	ID         string            `json:"ID"`
-	Attributes map[string]string `json:"Attributes"`
-	Metadata   map[string]any    `json:"Metadata"`
-}
-
-// SchedulerPickResponse mirrors pluginapi.SchedulerPickResponse.
-type SchedulerPickResponse struct {
-	Handled bool `json:"Handled"`
-}
-
 // Metadata mirrors pluginapi.Metadata.
 type Metadata struct {
 	Name             string        `json:"Name"`
@@ -73,7 +56,6 @@ type ConfigField struct {
 // Capabilities declares the plugin's supported integration points.
 type Capabilities struct {
 	RequestInterceptor bool `json:"request_interceptor"`
-	Scheduler          bool `json:"scheduler"`
 }
 
 // Registration is the plugin.register / plugin.reconfigure result.

@@ -99,8 +99,8 @@ func fingerprintApplies(model, requestedModel string, cfg Config) bool {
 	if !BoolVal(cfg.Fingerprint.FreeOnly, DefaultFingerprintFreeOnly) {
 		return true
 	}
-	return isZenFreeTierModel(model, cfg.BodyClean) ||
-		isZenFreeTierModel(requestedModel, cfg.BodyClean)
+	return isZenFreeTierModel(model, cfg.FreeTier) ||
+		isZenFreeTierModel(requestedModel, cfg.FreeTier)
 }
 
 // fingerprintTools returns the configured tool quartet, or the default.
@@ -128,14 +128,6 @@ func fingerprintValue(v, fallback string) string {
 // outboundUAHeader returns the header the credential glue maps to User-Agent.
 func outboundUAHeader(cfg Config) string {
 	return fingerprintValue(cfg.UserAgent.OutboundHeader, DefaultOutboundUAHeader)
-}
-
-// boolLabel renders a bool for the log line.
-func boolLabel(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
 }
 
 // requiredGlueHeaders lists the credential `headers:` entries a fingerprinted

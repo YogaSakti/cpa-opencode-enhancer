@@ -13,23 +13,6 @@ const (
 	ClientGeneric  = "generic"
 )
 
-// User-Agent rewrite modes.
-const (
-	// UAModePassthrough forwards the client's own User-Agent upstream. The
-	// client's UA carries its real name AND version, so it never goes stale.
-	UAModePassthrough = "passthrough"
-	// UAModeStatic sends a single fixed UA for every request.
-	UAModeStatic = "static"
-	// UAModeMap picks the UA from custom_ua[clientType] (the old behavior).
-	UAModeMap = "map"
-	// UAModeTemplate builds the UA from a template with {name}, {version},
-	// {client} placeholders parsed from the client's own UA.
-	UAModeTemplate = "template"
-)
-
-// DefaultUAMode is the rewrite mode when user_agent.mode is unset.
-const DefaultUAMode = UAModePassthrough
-
 // DefaultFallbackUA is used when the client UA is generic/empty and no
 // custom_ua entry matches. It is deliberately neutral: no "proxy"/"cliproxy"
 // marker that would reveal the traffic is being reshaped. Override with
@@ -88,50 +71,13 @@ func detectClientType(headers http.Header) string {
 	return ClientGeneric
 }
 
-// resolveUserAgent picks the outbound user-agent.
-//
-//   - An explicit user_agent.value always wins (static).
-//   - mode=passthrough (default): forward the client's own User-Agent, unless
-//     it is generic/empty, in which case fall back to custom_ua / the proxy
-//     identity UA. This keeps real client versions current forever.
-//   - mode=map: use custom_ua[clientType] / custom_ua["default"].
-//   - mode=template: fill {name} {version} {client} from the client UA.
-func resolveUserAgent(cfg Config, clientType, clientUA string) string {
-	if v := strings.TrimSpace(cfg.UserAgent.Value); v != "" {
-		return v
-	}
-	mode := strings.ToLower(strings.TrimSpace(cfg.UserAgent.Mode))
-	if mode == "" {
-		mode = DefaultUAMode
-	}
-	switch mode {
-	case UAModeMap:
-		return uaFromMap(cfg, clientType)
-	case UAModeTemplate:
-		if tmpl := strings.TrimSpace(cfg.UserAgent.Template); tmpl != "" {
-			name, version := parseUserAgent(clientUA)
-			if name != "" {
-				return applyUATemplate(tmpl, name, version, clientType)
-			}
-		}
-		return uaFromMap(cfg, clientType)
-	default: // passthrough
-		if ua := strings.TrimSpace(clientUA); ua != "" && !isGenericUserAgent(ua, cfg.UserAgent.GenericPatterns) {
-			return ua
-		}
-		return uaFromMap(cfg, clientType)
-	}
-}
-
-// uaFromMap resolves the UA from custom_ua, then the configured fallback.
-// The fallback is a neutral agent-style UA (no proxy marker) so anonymous or
-// SDK clients do not reveal that the request was reshaped.
-func uaFromMap(cfg Config, clientType string) string {
-	if v, ok := cfg.UserAgent.CustomUA[clientType]; ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
-	}
-	if v, ok := cfg.UserAgent.CustomUA["default"]; ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
+// resolveUserAgent picks the outbound user-agent for a NON-fingerprinted
+// (paid) request: forward the client's own UA, which carries its real name and
+// version and so never goes stale. A generic SDK/HTTP-library UA is replaced
+// with a neutral agent UA instead.
+func resolveUserAgent(cfg Config, clientUA string) string {
+	if ua := strings.TrimSpace(clientUA); ua != "" && !isGenericUserAgent(ua) {
+		return ua
 	}
 	if v := strings.TrimSpace(cfg.UserAgent.FallbackValue); v != "" {
 		return v
@@ -141,50 +87,17 @@ func uaFromMap(cfg Config, clientType string) string {
 
 // isGenericUserAgent reports whether a User-Agent identifies an SDK / HTTP
 // library (or is too short to be meaningful) rather than a real agent.
-func isGenericUserAgent(ua string, extraPatterns []string) bool {
+func isGenericUserAgent(ua string) bool {
 	lower := strings.ToLower(strings.TrimSpace(ua))
-	if lower == "" || len(lower) < 3 {
+	if len(lower) < 3 {
 		return true
 	}
-	patterns := defaultGenericUAPatterns
-	if len(extraPatterns) > 0 {
-		patterns = append(patterns, extraPatterns...)
-	}
-	for _, p := range patterns {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p != "" && strings.Contains(lower, p) {
+	for _, p := range defaultGenericUAPatterns {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}
 	return false
-}
-
-// parseUserAgent extracts a name/version pair from a client User-Agent.
-// "codex-tui/0.153.3 (Mac OS ...)" → ("codex-tui", "0.153.3").
-func parseUserAgent(ua string) (name, version string) {
-	ua = strings.TrimSpace(ua)
-	if ua == "" {
-		return "", ""
-	}
-	first := ua
-	if i := strings.IndexAny(ua, " (["); i >= 0 {
-		first = ua[:i]
-	}
-	first = strings.TrimSpace(first)
-	if i := strings.Index(first, "/"); i >= 0 {
-		return strings.TrimSpace(first[:i]), strings.TrimSpace(first[i+1:])
-	}
-	return first, ""
-}
-
-// applyUATemplate fills {name}, {version}, {client} placeholders.
-// Unknown placeholders are left untouched.
-func applyUATemplate(tmpl, name, version, clientType string) string {
-	out := tmpl
-	out = strings.ReplaceAll(out, "{name}", name)
-	out = strings.ReplaceAll(out, "{version}", version)
-	out = strings.ReplaceAll(out, "{client}", clientType)
-	return strings.TrimSpace(out)
 }
 
 // resolveClientIdentity picks the identity value sent as X-Opencode-Client.

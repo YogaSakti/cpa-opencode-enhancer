@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -18,7 +19,6 @@ const (
 	MethodPluginShutdown         = "plugin.shutdown"
 	MethodRequestInterceptBefore = "request.intercept_before"
 	MethodRequestInterceptAfter  = "request.intercept_after"
-	MethodSchedulerPick          = "scheduler.pick"
 )
 
 // Manager owns the plugin state and routes every RPC method. Safe for
@@ -27,10 +27,6 @@ type Manager struct {
 	mu sync.RWMutex
 
 	cfg Config
-	// knownAuths holds auth IDs observed by the scheduler hook whose
-	// provider base URL matched a configured marker. Bounded by the
-	// number of credentials; reset on reconfigure.
-	knownAuths map[string]struct{}
 	// warnedAuths tracks credentials already warned about the required
 	// header glue. Bounded by the number of credentials; reset on reconfigure.
 	warnedAuths map[string]struct{}
@@ -40,7 +36,6 @@ type Manager struct {
 func NewManager() *Manager {
 	return &Manager{
 		cfg:         DefaultConfig(),
-		knownAuths:  make(map[string]struct{}),
 		warnedAuths: make(map[string]struct{}),
 	}
 }
@@ -57,12 +52,9 @@ func (m *Manager) HandleCall(method string, payload []byte) ([]byte, error) {
 		return emptyInterceptResponse(), nil
 	case MethodRequestInterceptAfter:
 		return m.handleInterceptAfter(payload)
-	case MethodSchedulerPick:
-		return m.handleSchedulerPick(payload)
 	case MethodPluginShutdown, MethodPluginQuiesce:
 		m.mu.Lock()
 		m.cfg = DefaultConfig()
-		m.knownAuths = make(map[string]struct{})
 		m.warnedAuths = make(map[string]struct{})
 		m.mu.Unlock()
 		SetLogEnabled(false)
@@ -89,7 +81,6 @@ func (m *Manager) handleLifecycle(payload []byte) ([]byte, error) {
 	}
 	m.mu.Lock()
 	m.cfg = cfg
-	m.knownAuths = make(map[string]struct{})
 	m.warnedAuths = make(map[string]struct{})
 	m.mu.Unlock()
 	applyLoggingConfig(cfg)
@@ -109,11 +100,9 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 
 	m.mu.RLock()
 	cfg := m.cfg
-	known := m.knownAuths
 	m.mu.RUnlock()
 
-	if !isTarget(req, cfg) &&
-		!isKnownOpenCodeAuth(metadataString(req.Metadata, "selected_auth_id"), known) {
+	if !isTarget(req, cfg) {
 		logSkip(req)
 		return emptyInterceptResponse(), nil
 	}
@@ -125,7 +114,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	// UA, client/project/session/request headers, streaming, and the tool
 	// quartet. Missing any one of them returns 403 FreeTierError.
 	fingerprint := fingerprintApplies(req.Model, req.RequestedModel, cfg)
-	logValues["fingerprint"] = boolLabel(fingerprint)
+	logValues["fingerprint"] = strconv.FormatBool(fingerprint)
 	if fingerprint {
 		m.warnGlueRequirement(metadataString(req.Metadata, "selected_auth_id"), cfg)
 	}
@@ -185,7 +174,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		logValues["outbound_ua"] = ua
 		logValues["identity"] = fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient)
 	case BoolVal(cfg.UserAgent.Rewrite, DefaultRewriteUA):
-		if ua := resolveUserAgent(cfg, clientType, clientUA); ua != "" {
+		if ua := resolveUserAgent(cfg, clientUA); ua != "" {
 			resp.Headers.Set(outboundUAHeader(cfg), ua)
 			logValues["outbound_ua"] = ua
 			if cfg.UserAgent.SetUserAgentHeader {
@@ -198,27 +187,13 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		}
 	}
 
-	// 3. Body shaping. Cleanup first (drop rejected input[] entry types), then
-	// the fingerprint rewrite (stream, tool quartet, Responses hygiene).
+	// 3. Body shaping: stream, tool quartet, Responses hygiene.
 	bodyChanged := false
-	body := req.Body
-	if BoolVal(cfg.BodyClean.StripAdditionalTools, DefaultStripTools) {
-		if isZenFreeTierModel(req.Model, cfg.BodyClean) ||
-			isZenFreeTierModel(req.RequestedModel, cfg.BodyClean) {
-			if fixed, changed := stripInputTypes(body, cfg.BodyClean.StripTypes); changed {
-				body = fixed
-				bodyChanged = true
-			}
-		}
-	}
 	if fingerprint {
-		if fixed, changed := applyFingerprintBody(body, cfg.Fingerprint); changed {
-			body = fixed
+		if fixed, changed := applyFingerprintBody(req.Body, cfg.Fingerprint); changed {
+			resp.Body = fixed
 			bodyChanged = true
 		}
-	}
-	if bodyChanged {
-		resp.Body = body
 	}
 
 	logIntercept(req, logValues, bodyChanged)
@@ -227,49 +202,6 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		return emptyInterceptResponse(), nil
 	}
 	return OKEnvelope(resp), nil
-}
-
-// handleSchedulerPick observes auth candidates and marks those whose
-// provider base URL contains a configured marker. It never makes a
-// scheduling decision itself (Handled: false delegates to the built-in).
-func (m *Manager) handleSchedulerPick(payload []byte) ([]byte, error) {
-	var req SchedulerPickRequest
-	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, &req); err != nil {
-			return nil, err
-		}
-	}
-	m.mu.RLock()
-	markers := m.cfg.Target.BaseURLMarkers
-	m.mu.RUnlock()
-
-	m.mu.Lock()
-	for _, c := range req.Candidates {
-		if candidateHasMarker(c, markers) {
-			m.knownAuths[c.ID] = struct{}{}
-		}
-	}
-	m.mu.Unlock()
-
-	return OKEnvelope(SchedulerPickResponse{Handled: false}), nil
-}
-
-// candidateHasMarker reports whether a scheduler candidate's base URL
-// contains any configured marker (case-insensitive).
-func candidateHasMarker(c SchedulerAuthCandidate, markers []string) bool {
-	baseURL := strings.TrimSpace(c.Attributes["base_url"])
-	if baseURL == "" {
-		if v, ok := c.Metadata["base_url"].(string); ok {
-			baseURL = strings.TrimSpace(v)
-		}
-	}
-	baseURL = strings.ToLower(baseURL)
-	for _, marker := range markers {
-		if marker != "" && strings.Contains(baseURL, strings.ToLower(strings.TrimSpace(marker))) {
-			return true
-		}
-	}
-	return false
 }
 
 // registration returns the plugin.register result.
@@ -282,20 +214,17 @@ func registration() Registration {
 			Author:           "YogaSakti",
 			GitHubRepository: GitHubRepo,
 			ConfigFields: []ConfigField{
-				{Name: "session.header_name", Type: "string", Description: "Header injected with the resolved OpenCode session id."},
-				{Name: "session.hash_derived", Type: "boolean", Description: "Hash derived session identities before sending them upstream."},
-				{Name: "user_agent.rewrite", Type: "boolean", Description: "Rewrite the outbound user-agent per detected client type."},
-				{Name: "body_cleanup.strip_additional_tools", Type: "boolean", Description: "Strip additional_tools input entries for zen free-tier models."},
 				{Name: "fingerprint.enabled", Type: "boolean", Description: "Send the official OpenCode client fingerprint required by the zen free tier."},
 				{Name: "fingerprint.user_agent", Type: "string", Description: "User-Agent used on the fingerprint path (must be opencode/>=1.17)."},
 				{Name: "fingerprint.force_stream", Type: "boolean", Description: "Force stream:true; the zen free tier rejects non-streaming requests."},
 				{Name: "fingerprint.free_only", Type: "boolean", Description: "Restrict the fingerprint to free-tier models; paid builds are untouched."},
-				{Name: "target.base_url_markers", Type: "array", Description: "Provider base URL markers that enable shaping for all models on those providers."},
+				{Name: "fingerprint.warn_missing_glue", Type: "boolean", Description: "Log the credential headers: entries the fingerprint depends on, once per auth."},
+				{Name: "session.header_name", Type: "string", Description: "Header injected with the resolved OpenCode session id."},
+				{Name: "target.auth_prefixes", Type: "array", Description: "Substrings of the host auth id that enable shaping."},
 			},
 		},
 		Capabilities: Capabilities{
 			RequestInterceptor: true,
-			Scheduler:          true,
 		},
 	}
 }

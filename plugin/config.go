@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.4.3"
+	PluginVersion = "0.5.0"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -24,13 +24,7 @@ const (
 	DefaultSessionHeaderName = "x-opencode-session"
 	DefaultHashDerived       = true
 	DefaultFallbackBodyHash  = true
-	// DefaultFallbackRequestID is OFF: a request id is never a conversation
-	// id, so forwarding it creates a fresh upstream session per request and
-	// kills prompt-cache affinity. Only enable it to dodge a hard
-	// MissingSessionID 400 when the body cannot be hashed either.
-	DefaultFallbackRequestID = false
 	DefaultRewriteUA         = true
-	DefaultStripTools        = true
 	// DefaultLogEnabled keeps host.log observability OFF unless explicitly
 	// enabled in config: one log line per request is too noisy by default.
 	DefaultLogEnabled = false
@@ -40,7 +34,7 @@ const (
 type Config struct {
 	Session     SessionConfig     `yaml:"session"`
 	UserAgent   UserAgentConfig   `yaml:"user_agent"`
-	BodyClean   BodyCleanConfig   `yaml:"body_cleanup"`
+	FreeTier    FreeTierConfig    `yaml:"free_tier"`
 	Fingerprint FingerprintConfig `yaml:"fingerprint"`
 	Target      TargetConfig      `yaml:"target"`
 	Logging     LoggingConfig     `yaml:"logging"`
@@ -54,34 +48,29 @@ type LoggingConfig struct {
 
 // SessionConfig controls session header injection.
 type SessionConfig struct {
-	HeaderName        string   `yaml:"header_name"`
-	SourceHeaders     []string `yaml:"source_headers"`
-	HashDerived       *bool    `yaml:"hash_derived"`
-	FallbackBodyHash  *bool    `yaml:"fallback_to_body_hash"`
-	FallbackRequestID *bool    `yaml:"fallback_to_request_id"`
+	HeaderName       string   `yaml:"header_name"`
+	SourceHeaders    []string `yaml:"source_headers"`
+	HashDerived      *bool    `yaml:"hash_derived"`
+	FallbackBodyHash *bool    `yaml:"fallback_to_body_hash"`
 }
 
-// UserAgentConfig controls user-agent rewrite.
+// UserAgentConfig controls the outbound user-agent on the non-fingerprint
+// (paid) path. The fingerprint path ignores it: upstream demands a specific
+// value there.
 type UserAgentConfig struct {
 	Rewrite            *bool             `yaml:"rewrite"`
-	Mode               string            `yaml:"mode"`
-	Value              string            `yaml:"value"`
-	Template           string            `yaml:"template"`
 	FallbackValue      string            `yaml:"fallback_value"`
-	CustomUA           map[string]string `yaml:"custom_ua"`
-	GenericPatterns    []string          `yaml:"generic_patterns"`
 	ClientMap          map[string]string `yaml:"client_map"`
 	OutboundHeader     string            `yaml:"outbound_header"`
 	SetUserAgentHeader bool              `yaml:"set_user_agent_header"`
 }
 
-// BodyCleanConfig controls zen free-tier body cleanup.
-type BodyCleanConfig struct {
-	StripAdditionalTools *bool    `yaml:"strip_additional_tools"`
-	FreeMarkers          []string `yaml:"free_markers"`
-	ZenFreeModels        []string `yaml:"zen_free_models"`
-	ZenPaidModels        []string `yaml:"zen_paid_models"`
-	StripTypes           []string `yaml:"strip_types"`
+// FreeTierConfig classifies a model as free-tier or paid. It gates the whole
+// fingerprint: paid builds must never be reshaped.
+type FreeTierConfig struct {
+	Markers    []string `yaml:"markers"`
+	FreeModels []string `yaml:"free_models"`
+	PaidModels []string `yaml:"paid_models"`
 }
 
 // TargetConfig controls which requests are intercepted.
@@ -95,9 +84,7 @@ type TargetConfig struct {
 func DefaultConfig() Config {
 	hashDerived := DefaultHashDerived
 	fallbackBody := DefaultFallbackBodyHash
-	fallbackReqID := DefaultFallbackRequestID
 	rewriteUA := DefaultRewriteUA
-	stripTools := DefaultStripTools
 	logEnabled := DefaultLogEnabled
 
 	return Config{
@@ -128,16 +115,12 @@ func DefaultConfig() Config {
 				// tools set it per call.
 				"X-Client-Request-Id",
 			},
-			HashDerived:       &hashDerived,
-			FallbackBodyHash:  &fallbackBody,
-			FallbackRequestID: &fallbackReqID,
+			HashDerived:      &hashDerived,
+			FallbackBodyHash: &fallbackBody,
 		},
 		UserAgent: UserAgentConfig{
-			Rewrite:         &rewriteUA,
-			Mode:            DefaultUAMode,
-			FallbackValue:   DefaultFallbackUA,
-			CustomUA:        map[string]string{},
-			GenericPatterns: []string{},
+			Rewrite:       &rewriteUA,
+			FallbackValue: DefaultFallbackUA,
 			ClientMap: map[string]string{
 				"codex":    "codex",
 				"claude":   "claude-code",
@@ -150,12 +133,10 @@ func DefaultConfig() Config {
 			OutboundHeader:     DefaultOutboundUAHeader,
 			SetUserAgentHeader: false,
 		},
-		BodyClean: BodyCleanConfig{
-			StripAdditionalTools: &stripTools,
-			FreeMarkers:          []string{"-free", ":free"},
-			ZenFreeModels:        []string{},
-			ZenPaidModels:        []string{},
-			StripTypes:           []string{"additional_tools"},
+		FreeTier: FreeTierConfig{
+			Markers:    []string{"-free", ":free"},
+			FreeModels: []string{},
+			PaidModels: []string{},
 		},
 		Fingerprint: defaultFingerprintConfig(),
 		Target: TargetConfig{

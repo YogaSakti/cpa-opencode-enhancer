@@ -34,36 +34,24 @@ plugins:
           - X-Client-Request-Id
         hash_derived: true
         fallback_to_body_hash: true
-        fallback_to_request_id: false
 
-      # --- User-Agent / client identity ---
+      # --- User-Agent / client identity (non-fingerprint, i.e. paid, path only) ---
       user_agent:
         rewrite: true
-        mode: "passthrough"              # passthrough | static | map | template
-        value: ""                        # static mode: explicit UA for every request
-        template: ""                     # template mode: "{name}/{version} (via cliproxy)"
-        fallback_value: "coding-agent/1.0"  # UA saat client UA generic/kosong (netral, tanpa label proxy)
-        custom_ua:                       # map mode / fallback per-client override
-          codex: "codex-cli/1.0"
-          claude: "claude-code/1.0"
-          opencode: "opencode/1.0"
-          default: "coding-agent/1.0"
-        generic_patterns: []             # extra UA substrings treated as generic
+        fallback_value: "coding-agent/1.0"  # dipakai saat UA client generic/kosong
         client_map:
           codex: "codex"
           claude: "claude-code"
           opencode: "opencode"
-          generic: ""                   # kosong = header X-Opencode-Client di-omit (anti-deteksi)
+          generic: ""                   # kosong = header X-Opencode-Client di-omit
         outbound_header: "X-Opencode-User-Agent"
         set_user_agent_header: false
 
-      # --- Zen free-tier body cleanup ---
-      body_cleanup:
-        strip_additional_tools: true
-        free_markers: ["-free", ":free"]  # dynamic free-tier detection
-        zen_free_models: []               # extra exact names treated as free
-        zen_paid_models: []               # exact names never stripped (guard)
-        strip_types: ["additional_tools"] # input[] entry types to drop
+      # --- Free vs paid classification (gates the whole fingerprint) ---
+      free_tier:
+        markers: ["-free", ":free"]
+        free_models: []               # nama eksak yang dianggap free
+        paid_models: []               # nama eksak yang tidak pernah di-reshape
 
       # --- OpenCode Zen free-tier client fingerprint ---
       # The free tier gates on the WHOLE official-client fingerprint; a request

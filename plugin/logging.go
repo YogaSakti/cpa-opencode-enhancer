@@ -2,8 +2,8 @@ package plugin
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -109,7 +109,10 @@ func logIntercept(req RequestInterceptRequest, values map[string]string, bodyCha
 	if details["session"] == "" {
 		details["session"] = "(none)"
 	}
-	details["body_cleanup"] = fmt.Sprint(bodyChanged)
+	// Named for what it reports: whether this plugin rewrote the request body.
+	// The old "body_cleanup" label predated the fingerprint rewrite and read as
+	// if only the (now removed) cleanup step could set it.
+	details["body_shaped"] = strconv.FormatBool(bodyChanged)
 	details["auth"] = metadataString(req.Metadata, "selected_auth_id")
 
 	logToHost(

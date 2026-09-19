@@ -24,7 +24,6 @@ type sessionResult struct {
 //  2. CLAUDE/Codex/… session headers, in configured order
 //  3. canonical_session_id metadata (host-computed session identity)
 //  4. hash of the first user turn body content
-//  5. request id (request-scoped; only when fallback_to_request_id)
 //
 // Derived values are hashed when session.hash_derived is enabled; native
 // values pass through untouched.
@@ -62,18 +61,6 @@ func resolveSessionID(req RequestInterceptRequest, cfg Config, headerName string
 		if content := firstUserContent(req.SourceFormat, req.Body); content != "" {
 			digest := sha256.Sum256([]byte(content))
 			return sessionResult{Value: hex.EncodeToString(digest[:]), Source: "body", Stable: true}, true
-		}
-	}
-
-	// 5. Request-scoped fallback. OFF by default (see
-	// DefaultFallbackRequestID): a request id is not a conversation id, so
-	// injecting it gives upstream a brand-new session on every request and
-	// destroys prompt-cache affinity. Opt in with
-	// session.fallback_to_request_id only to escape a hard MissingSessionID
-	// 400 when the body could not be hashed either.
-	if BoolVal(cfg.Session.FallbackRequestID, DefaultFallbackRequestID) && req.RequestID != "" {
-		if cleaned := cleanSession(req.RequestID); cleaned != "" {
-			return sessionResult{Value: cleaned, Source: "request", Stable: false}, true
 		}
 	}
 
