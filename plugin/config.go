@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.4.0"
+	PluginVersion = "0.4.1"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -160,8 +160,13 @@ func DefaultConfig() Config {
 		Fingerprint: defaultFingerprintConfig(),
 		Target: TargetConfig{
 			BaseURLMarkers: []string{"opencode.ai"},
-			AuthPrefixes:   []string{"openai-compatibility:opencode:"},
-			Models:         []string{},
+			// Matched as a case-insensitive substring of the host's auth id.
+			// The host builds that id from the credential's display name
+			// ("Opencode Zen" -> "openai-compatible-opencode zen"), so a bare
+			// "opencode" covers every sensible naming, including the older
+			// "openai-compatibility:opencode:" form.
+			AuthPrefixes: []string{"opencode"},
+			Models:       []string{},
 		},
 		Logging: LoggingConfig{
 			Enabled: &logEnabled,

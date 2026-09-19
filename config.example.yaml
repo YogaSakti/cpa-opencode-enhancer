@@ -1,6 +1,14 @@
 # opencode-enhancer plugin configuration example.
-# Copy the relevant block into your CLIProxyAPI config.yaml under
-# plugins.configs.opencode-enhancer.
+#
+# EVERY key under opencode-enhancer is OPTIONAL and shown here at its default.
+# A working install needs only:
+#
+#   plugins:
+#     configs:
+#       opencode-enhancer:
+#         enabled: true
+#
+# The credential glue at the bottom of this file is NOT optional.
 
 plugins:
   enabled: true
@@ -82,7 +90,7 @@ plugins:
         base_url_markers:
           - "opencode.ai"
         auth_prefixes:
-          - "openai-compatibility:opencode:"
+          - "opencode"        # substring match on the host auth id
         models: []           # optional model globs, e.g. ["muse-*"]
 
 # --- Credential glue (REQUIRED on every OpenCode credential) ---

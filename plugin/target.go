@@ -18,11 +18,19 @@ func isTarget(req RequestInterceptRequest, cfg Config) bool {
 		}
 	}
 
-	// Check auth prefix.
-	selectedAuth := metadataString(req.Metadata, "selected_auth_id")
-	selectedIndex := metadataString(req.Metadata, "selected_auth_index")
-	for _, prefix := range cfg.Target.AuthPrefixes {
-		if strings.HasPrefix(selectedAuth, prefix) || strings.HasPrefix(selectedIndex, prefix) {
+	// Check the auth id markers. Matched as a substring, not a prefix: the
+	// host derives the id from the provider's display name, so a credential
+	// called "Opencode Zen" arrives as "openai-compatible-opencode zen" and a
+	// prefix match silently misses every request. Substring matching is a
+	// superset of the old prefix behaviour, so existing configs keep working.
+	selectedAuth := strings.ToLower(metadataString(req.Metadata, "selected_auth_id"))
+	selectedIndex := strings.ToLower(metadataString(req.Metadata, "selected_auth_index"))
+	for _, marker := range cfg.Target.AuthPrefixes {
+		marker = strings.ToLower(strings.TrimSpace(marker))
+		if marker == "" {
+			continue
+		}
+		if strings.Contains(selectedAuth, marker) || strings.Contains(selectedIndex, marker) {
 			return true
 		}
 	}

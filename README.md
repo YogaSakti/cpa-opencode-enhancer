@@ -88,7 +88,17 @@ GOOS=darwin GOARCH=arm64 ./build.sh # macOS
 <cliproxyapi_root>/plugins/linux/amd64/opencode-enhancer.so
 ```
 
+> [!IMPORTANT]
+> Name the file `opencode-enhancer-v<version>.so` (matching the version in the
+> plugin's `store:` block) if CLIProxyAPI manages it as a store install.
+> A store-managed plugin whose filename carries no version is **skipped
+> silently** — no error, no log line, `registered: false` in
+> `/v0/management/plugins`, and every request passes through unshaped.
+
 ### 3. Enable it in `config.yaml`
+
+Everything is optional except `enabled`. The defaults are the verified
+free-tier values; this is a complete, working configuration:
 
 ```yaml
 plugins:
@@ -97,7 +107,6 @@ plugins:
   configs:
     opencode-enhancer:
       enabled: true
-      priority: 100
 ```
 
 Restart CLIProxyAPI and confirm:
@@ -181,6 +190,9 @@ glue is needed there.
 
 ## Configuration reference
 
+Every key below is optional and shown at its default. Set one only to override
+the default — the plugin works with none of them.
+
 ```yaml
 plugins:
   configs:
@@ -243,7 +255,7 @@ plugins:
 
       target:
         base_url_markers: ["opencode.ai"]   # auto-match auths by provider URL
-        auth_prefixes: ["openai-compatibility:opencode:"]
+        auth_prefixes: ["opencode"]         # substring of the host's auth id
         models: []                          # optional model globs (e.g. "muse-*")
 
       logging:
@@ -315,6 +327,37 @@ opencode-enhancer: shaped auth=... client_type=opencode client_ua=opencode/1.2.3
 `session_source` values: `header` (client session header), `metadata` (CPA
 canonical session id), `body` (first-user-turn hash), `native` (client's own
 `x-opencode-session`, preserved verbatim).
+
+## Troubleshooting
+
+Both failures below are silent — the plugin does nothing and every request is
+rejected upstream with `403 FreeTierError`.
+
+**1. The plugin never loaded.** Check it registered:
+
+```bash
+journalctl -u cliproxyapi --no-pager -n 40 | grep opencode-enhancer
+# want: pluginhost: plugin registered plugin_id=opencode-enhancer version=...
+```
+
+Nothing at all (not even an error) means CLIProxyAPI skipped the file. The
+usual cause is a store-managed plugin whose filename carries no version:
+rename it to `opencode-enhancer-v<version>.so` and restart. Plugins are
+`dlopen`ed once at startup, so a config reload will not pick up a rename.
+
+**2. The plugin loaded but skips every request.** Turn on `logging.enabled`
+and look for a `shaped` line per request. No line means `target` matched
+nothing. Read the auth id out of an error response:
+
+```text
+auth_unavailable: no auth available (providers=openai-compatible-opencode zen, model=...)
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+CLIProxyAPI derives that id from the credential's display name, so a
+credential called "Opencode Zen" becomes `openai-compatible-opencode zen`. The
+default `auth_prefixes: ["opencode"]` matches it as a substring; add your own
+marker if you named the credential something without "opencode" in it.
 
 ## Known limitations
 
