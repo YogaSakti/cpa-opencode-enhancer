@@ -348,8 +348,13 @@ journalctl -u cliproxyapi --no-pager -n 40 | grep opencode-enhancer
 
 Nothing at all (not even an error) means CLIProxyAPI skipped the file. The
 usual cause is a store-managed plugin whose filename carries no version:
-rename it to `opencode-enhancer-v<version>.so` and restart. Plugins are
-`dlopen`ed once at startup, so a config reload will not pick up a rename.
+rename it to `opencode-enhancer-v<version>.so` and restart.
+
+CLIProxyAPI hot-reloads a plugin when it detects a **new version** — dropping
+in `opencode-enhancer-v0.4.3.so` beside a running `v0.4.2` logs
+`plugin hot reloaded active_version=0.4.3 retired_version=0.4.2` with no
+restart. A rename that does not change the detected version does not trigger
+it, so recovering from the unversioned-filename case does need a restart.
 
 **2. The plugin loaded but skips every request.** Turn on `logging.enabled`
 and look for a `shaped` line per request. No line means `target` matched
@@ -360,8 +365,9 @@ auth_unavailable: no auth available (providers=openai-compatible-opencode zen, m
                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-CLIProxyAPI derives that id from the credential's display name, so a
-credential called "Opencode Zen" becomes `openai-compatible-opencode zen`. The
+CLIProxyAPI derives that id from the credential's display name. Observed forms
+on one live host: `openai-compatible-opencode zen` in error messages and
+`openai-compatibility:opencode zen:d4fc8bb50803` in the interceptor metadata. The
 default `auth_prefixes: ["opencode"]` matches it as a substring; add your own
 marker if you named the credential something without "opencode" in it.
 
