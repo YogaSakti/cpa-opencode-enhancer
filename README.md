@@ -88,12 +88,17 @@ GOOS=darwin GOARCH=arm64 ./build.sh # macOS
 <cliproxyapi_root>/plugins/linux/amd64/opencode-enhancer.so
 ```
 
+Releases ship `opencode-enhancer_<version>_linux_amd64.zip` plus
+`checksums.txt`, the layout CLIProxyAPI's plugin store installs from. Point the
+store at this repository and it downloads, extracts and names the file itself —
+nothing to place by hand.
+
 > [!IMPORTANT]
-> Name the file `opencode-enhancer-v<version>.so` (matching the version in the
-> plugin's `store:` block) if CLIProxyAPI manages it as a store install.
-> A store-managed plugin whose filename carries no version is **skipped
-> silently** — no error, no log line, `registered: false` in
-> `/v0/management/plugins`, and every request passes through unshaped.
+> Installing by hand instead? Name the file
+> `opencode-enhancer-v<version>.so`. A store-managed plugin whose filename
+> carries no version is **skipped silently** — no error, no log line,
+> `registered: false` in `/v0/management/plugins`, and every request passes
+> through unshaped.
 
 ### 3. Enable it in `config.yaml`
 

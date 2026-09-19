@@ -25,12 +25,29 @@ jobs:
             go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
             -o dist/linux/amd64/opencode-enhancer.so .
 
-      - name: Create release and upload asset
+      # CLIProxyAPI's plugin store installs from a zip named
+      # <id>_<version>_<os>_<arch>.zip holding a bare <id>.so, and derives the
+      # on-disk name <id>-v<version>.so from it. A release that ships the raw
+      # .so cannot be installed by the store, and a hand-placed unversioned
+      # .so is skipped at startup with no error at all.
+      - name: Package release archive
+        id: pkg
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="opencode-enhancer_${version}_linux_amd64.zip"
+          (cd dist/linux/amd64 && zip -q -X "../../../${archive}" opencode-enhancer.so)
+          sha256sum "${archive}" > checksums.txt
+          unzip -l "${archive}"
+          cat checksums.txt
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
-            dist/linux/amd64/opencode-enhancer.so \
+            "${{ steps.pkg.outputs.archive }}" \
+            checksums.txt \
             --repo "${{ github.repository }}" \
             --generate-notes \
             --title "${{ github.ref_name }}"
