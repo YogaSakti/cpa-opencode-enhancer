@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.3.2"
+	PluginVersion = "0.4.0"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -38,11 +38,12 @@ const (
 
 // Config is the plugin's configuration, loaded from plugins.configs.opencode-enhancer.
 type Config struct {
-	Session   SessionConfig   `yaml:"session"`
-	UserAgent UserAgentConfig `yaml:"user_agent"`
-	BodyClean BodyCleanConfig `yaml:"body_cleanup"`
-	Target    TargetConfig    `yaml:"target"`
-	Logging   LoggingConfig   `yaml:"logging"`
+	Session     SessionConfig     `yaml:"session"`
+	UserAgent   UserAgentConfig   `yaml:"user_agent"`
+	BodyClean   BodyCleanConfig   `yaml:"body_cleanup"`
+	Fingerprint FingerprintConfig `yaml:"fingerprint"`
+	Target      TargetConfig      `yaml:"target"`
+	Logging     LoggingConfig     `yaml:"logging"`
 }
 
 // LoggingConfig controls host.log observability. Disabled by default: the
@@ -156,6 +157,7 @@ func DefaultConfig() Config {
 			ZenPaidModels:        []string{},
 			StripTypes:           []string{"additional_tools"},
 		},
+		Fingerprint: defaultFingerprintConfig(),
 		Target: TargetConfig{
 			BaseURLMarkers: []string{"opencode.ai"},
 			AuthPrefixes:   []string{"openai-compatibility:opencode:"},

@@ -63,6 +63,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false` and drops prior-turn `reasoning` / `encrypted_content`. Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Modes: `passthrough` (default), `static`, `map`, `template`. |
@@ -113,10 +114,32 @@ The plugin injects headers into the *execution headers*. Built-in executors
 only put headers on the wire that are declared in the credential's `headers:`
 map, so add `$` references on **every OpenCode credential**:
 
+`X-Opencode-Project` and `X-Opencode-Request` are part of the free-tier
+fingerprint, so they must be declared too — a header the credential does not
+declare never reaches the wire, and a fingerprint missing one part is a 403.
+
 ```yaml
-# OpenAI-compatible provider (chat completions / responses models)
+# OpenAI-compatible provider (chat completions models)
 openai-compatibility:
   - name: "opencode-go"
+    base-url: "https://opencode.ai/zen/go/v1"
+    headers:
+      User-Agent: "$X-Opencode-User-Agent"
+      X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Client: "$X-Opencode-Client"
+      X-Opencode-Project: "$X-Opencode-Project"
+      X-Opencode-Request: "$X-Opencode-Request"
+      Accept: "$Accept"
+    api-key-entries:
+      # Free tier authenticates with the pooled public key, not a personal one.
+      - api-key: "public"
+    models:
+      - name: "mimo-v2.5-free"
+        alias: "mimo-v2.5-free"
+      # ... add the models you use
+
+# Paid credential — same provider, its own entry, real key, no fingerprint.
+  - name: "opencode-go-paid"
     base-url: "https://opencode.ai/zen/go/v1"
     headers:
       User-Agent: "$X-Opencode-User-Agent"
@@ -127,19 +150,29 @@ openai-compatibility:
     models:
       - name: "glm-5.3"
         alias: "glm-5.3"
-      # ... add the models you use
 
-# Codex-style provider (responses models, e.g. muse free tier)
+# Codex-style provider (responses models, e.g. muse)
 codex-api-key:
-  - api-key: "${OPENCODE_ZEN_API_KEY}"
+  - api-key: "public"
     base-url: "https://opencode.ai/zen/v1"
     headers:
       X-Opencode-Session: "$X-Opencode-Session"
       X-Opencode-Client: "$X-Opencode-Client"
+      X-Opencode-Project: "$X-Opencode-Project"
+      X-Opencode-Request: "$X-Opencode-Request"
+      Accept: "$Accept"
     models:
-      - name: "muse-free"
+      - name: "muse-spark-1.3-contributor-free"
         alias: "muse-free"
 ```
+
+> [!WARNING]
+> **Free-tier muse on the codex path is not fixed yet.** The codex executor
+> applies its own `codex-tui/…` device-profile User-Agent *after* custom
+> headers, so the plugin's `opencode/1.18.31` never reaches the wire and the
+> free-tier gate still fails. Free-tier **chat** models on the
+> `openai-compatibility` path are unaffected. See
+> [Known limitations](#known-limitations).
 
 `$Name` copies the value from the (plugin-augmented) execution headers; when
 absent the header is omitted. On the codex path the host sends its own
@@ -189,6 +222,17 @@ plugins:
           generic: ""                       # empty = omit X-Opencode-Client header
         outbound_header: "X-Opencode-User-Agent"  # header the glue maps to User-Agent
         set_user_agent_header: false              # also set User-Agent directly
+
+      fingerprint:
+        enabled: true                     # send the official client fingerprint
+        user_agent: "opencode/1.18.31"    # must be opencode/>=1.17
+        client: "desktop"                 # X-Opencode-Client
+        project: "global"                 # X-Opencode-Project
+        accept: "text/event-stream"       # "" to leave Accept alone
+        force_stream: true                # stream:false is a 403 gate
+        inject_tools: ["bash", "glob", "grep", "read"]
+        strip_reasoning: true             # Responses: drop prior reasoning items
+        free_only: true                   # paid builds are never reshaped
 
       body_cleanup:
         strip_additional_tools: true
@@ -271,6 +315,29 @@ opencode-enhancer: shaped auth=... client_type=opencode client_ua=opencode/1.2.3
 `session_source` values: `header` (client session header), `metadata` (CPA
 canonical session id), `body` (first-user-turn hash), `native` (client's own
 `x-opencode-session`, preserved verbatim).
+
+## Known limitations
+
+- **Free-tier muse (codex path) still 403s.** The codex executor stamps its own
+  device-profile `codex-tui/…` User-Agent *after* custom headers, so the
+  plugin's `opencode/1.18.31` never reaches the wire. The free tier rejects
+  any non-`opencode/>=1.17` UA, so muse free models keep failing there until
+  CLIProxyAPI lets a plugin win that header. Free-tier **chat** models on the
+  `openai-compatibility` path are unaffected. Paid muse is unaffected: it is
+  never fingerprinted.
+- **`force_stream: true` breaks non-streaming clients.** The free tier rejects
+  `stream: false` outright, so the plugin flips it; a client that asked for a
+  non-streamed response then gets SSE the executor does not expect. Those
+  requests would have 403'd anyway. Set `fingerprint.force_stream: false` if
+  you would rather keep the client's own choice and lose the free tier.
+- **The fingerprint is a moving target.** `opencode/1.18.31`, the tool quartet,
+  and the `ses_`/`msg_` id shapes track a specific client release. When
+  upstream changes its gates, update `fingerprint.user_agent` /
+  `fingerprint.inject_tools` in config — no rebuild needed.
+- **Not verified against live upstream in this revision.** The gates above are
+  reproduced from the official client's behaviour and cross-checked against a
+  working independent implementation; the plugin's own coverage is unit tests,
+  not a live 200 from Zen.
 
 ## Host quirks discovered
 

@@ -112,33 +112,69 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	resp := RequestInterceptResponse{Headers: http.Header{}}
 	logValues := map[string]string{}
 
-	// 1. Session header. A native x-opencode-session (real OpenCode client)
-	// is authoritative and is never overridden.
-	if res, ok := resolveSessionID(req, cfg, cfg.Session.HeaderName); ok {
+	// The Zen free tier gates on the *whole* official-client fingerprint:
+	// UA, client/project/session/request headers, streaming, and the tool
+	// quartet. Missing any one of them returns 403 FreeTierError.
+	fingerprint := fingerprintApplies(req.Model, req.RequestedModel, cfg)
+	logValues["fingerprint"] = boolLabel(fingerprint)
+
+	// 1. Session header. Outside the fingerprint path a native
+	// x-opencode-session (real OpenCode client) is authoritative and is never
+	// overridden; on the fingerprint path a value that does not already carry
+	// the official ses_ shape is reshaped, because upstream rejects anything
+	// else.
+	res, haveSession := resolveSessionID(req, cfg, cfg.Session.HeaderName)
+	if !haveSession && fingerprint && req.RequestID != "" {
+		// Last resort: upstream needs *some* ses_ id. Not sticky, but a
+		// per-request session beats a hard 403.
+		res = sessionResult{Value: req.RequestID, Source: "request", Stable: false}
+		haveSession = true
+	}
+	if haveSession {
 		logValues["session_source"] = res.Source
-		if res.Source != "native" {
+		switch {
+		case fingerprint:
+			value := res.Value
+			if !isOpenCodeSessionID(value) {
+				value = shapeSessionID(value)
+			}
+			resp.Headers.Set(cfg.Session.HeaderName, value)
+			logValues["session"] = value
+		case res.Source != "native":
 			value := sessionHeaderValue(res, cfg)
 			resp.Headers.Set(cfg.Session.HeaderName, value)
 			logValues["session"] = value
-		} else {
+		default:
 			logValues["session"] = "native (preserved)"
 		}
 	}
 
-	// 2. Client identity + user-agent rewrite.
-	if BoolVal(cfg.UserAgent.Rewrite, DefaultRewriteUA) {
-		clientType := detectClientType(req.Headers)
-		clientUA := headerGet(req.Headers, "User-Agent")
-		logValues["client_type"] = clientType
-		if clientUA != "" {
-			logValues["client_ua"] = clientUA
+	// 2. Client identity + user-agent. On the fingerprint path both are fixed
+	// to the official client's values; the client's own UA would fail the gate.
+	clientType := detectClientType(req.Headers)
+	clientUA := headerGet(req.Headers, "User-Agent")
+	logValues["client_type"] = clientType
+	if clientUA != "" {
+		logValues["client_ua"] = clientUA
+	}
+	switch {
+	case fingerprint:
+		ua := fingerprintValue(cfg.Fingerprint.UserAgent, DefaultFingerprintUA)
+		resp.Headers.Set(outboundUAHeader(cfg), ua)
+		resp.Headers.Set("User-Agent", ua)
+		resp.Headers.Set(DefaultIdentityHeader,
+			fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient))
+		resp.Headers.Set(HeaderOpenCodeProject,
+			fingerprintValue(cfg.Fingerprint.Project, DefaultFingerprintProject))
+		resp.Headers.Set(HeaderOpenCodeRequest, newRequestID())
+		if accept := strings.TrimSpace(cfg.Fingerprint.Accept); accept != "" {
+			resp.Headers.Set("Accept", accept)
 		}
+		logValues["outbound_ua"] = ua
+		logValues["identity"] = fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient)
+	case BoolVal(cfg.UserAgent.Rewrite, DefaultRewriteUA):
 		if ua := resolveUserAgent(cfg, clientType, clientUA); ua != "" {
-			outbound := strings.TrimSpace(cfg.UserAgent.OutboundHeader)
-			if outbound == "" {
-				outbound = DefaultOutboundUAHeader
-			}
-			resp.Headers.Set(outbound, ua)
+			resp.Headers.Set(outboundUAHeader(cfg), ua)
 			logValues["outbound_ua"] = ua
 			if cfg.UserAgent.SetUserAgentHeader {
 				resp.Headers.Set("User-Agent", ua)
@@ -150,16 +186,27 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		}
 	}
 
-	// 3. Zen free-tier body cleanup: drop rejected input[] entry types.
+	// 3. Body shaping. Cleanup first (drop rejected input[] entry types), then
+	// the fingerprint rewrite (stream, tool quartet, Responses hygiene).
 	bodyChanged := false
+	body := req.Body
 	if BoolVal(cfg.BodyClean.StripAdditionalTools, DefaultStripTools) {
 		if isZenFreeTierModel(req.Model, cfg.BodyClean) ||
 			isZenFreeTierModel(req.RequestedModel, cfg.BodyClean) {
-			if fixed, changed := stripInputTypes(req.Body, cfg.BodyClean.StripTypes); changed {
-				resp.Body = fixed
+			if fixed, changed := stripInputTypes(body, cfg.BodyClean.StripTypes); changed {
+				body = fixed
 				bodyChanged = true
 			}
 		}
+	}
+	if fingerprint {
+		if fixed, changed := applyFingerprintBody(body, cfg.Fingerprint); changed {
+			body = fixed
+			bodyChanged = true
+		}
+	}
+	if bodyChanged {
+		resp.Body = body
 	}
 
 	logIntercept(req, logValues, bodyChanged)
@@ -227,6 +274,10 @@ func registration() Registration {
 				{Name: "session.hash_derived", Type: "boolean", Description: "Hash derived session identities before sending them upstream."},
 				{Name: "user_agent.rewrite", Type: "boolean", Description: "Rewrite the outbound user-agent per detected client type."},
 				{Name: "body_cleanup.strip_additional_tools", Type: "boolean", Description: "Strip additional_tools input entries for zen free-tier models."},
+				{Name: "fingerprint.enabled", Type: "boolean", Description: "Send the official OpenCode client fingerprint required by the zen free tier."},
+				{Name: "fingerprint.user_agent", Type: "string", Description: "User-Agent used on the fingerprint path (must be opencode/>=1.17)."},
+				{Name: "fingerprint.force_stream", Type: "boolean", Description: "Force stream:true; the zen free tier rejects non-streaming requests."},
+				{Name: "fingerprint.free_only", Type: "boolean", Description: "Restrict the fingerprint to free-tier models; paid builds are untouched."},
 				{Name: "target.base_url_markers", Type: "array", Description: "Provider base URL markers that enable shaping for all models on those providers."},
 			},
 		},
