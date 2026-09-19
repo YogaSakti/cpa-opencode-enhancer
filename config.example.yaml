@@ -82,17 +82,25 @@ plugins:
           - "opencode"        # substring match on the host auth id
         models: []           # optional model globs, e.g. ["muse-*"]
 
-# --- Credential glue (REQUIRED on every OpenCode credential) ---
+# --- Credential glue (REQUIRED on every free-tier OpenCode credential) ---
 # The plugin injects headers into the execution headers; built-in executors
-# only send headers declared here with "$" references.
+# only send headers declared here with "$" references. A header the credential
+# does not declare never reaches the wire, and a fingerprint missing one part
+# is a 403.
 #
-# X-Opencode-Project and X-Opencode-Request are part of the free-tier
-# fingerprint and MUST be declared too, or the plugin's values never reach
-# the wire.
+# Endpoints (verified 2026-09-19): catalog and inference live at different
+# prefixes on the current host, so no single base-url serves both.
+#   https://opencode.ai/inference/openai/v1   /models 404, /chat/completions 200  <- use this
+#   https://opencode.ai/inference/v1          /models 200, /chat/completions 404
+#   https://opencode.ai/zen/v1                both 200, separate free quota bucket
+#   https://opencode.ai/zen/go/v1             both 200, needs x-opencode-session
+# The 404 is harmless: CLIProxyAPI serves from the credential's own models: list.
+# Keys: old sk-… keys were revoked; current keys look like oc_sk_… .
 #
 # openai-compatibility:
-#   - name: "opencode-go"
-#     base-url: "https://opencode.ai/zen/go/v1"
+#   # FREE credential -- keep it free-only so aliases stay unambiguous.
+#   - name: "Opencode Free"
+#     base-url: "https://opencode.ai/inference/openai/v1"
 #     headers:
 #       User-Agent: "$X-Opencode-User-Agent"
 #       X-Opencode-Session: "$X-Opencode-Session"
@@ -101,21 +109,20 @@ plugins:
 #       X-Opencode-Request: "$X-Opencode-Request"
 #       Accept: "$Accept"
 #     api-key-entries:
-#       # Free tier uses the pooled public key, not a personal key.
-#       - api-key: "public"
+#       - api-key: "${OPENCODE_API_KEY}"
 #     models:
 #       - name: "mimo-v2.5-free"
-#         alias: "mimo-v2.5-free"
+#         alias: ""
+#       - name: "nemotron-3-ultra-free"
+#         alias: ""
 #
-# codex-api-key:
-#   - api-key: "public"
-#     base-url: "https://opencode.ai/zen/v1"
+#   # PAID credential -- never fingerprinted; zen/go/v1 only needs the session.
+#   - name: "Opencode Paid"
+#     base-url: "https://opencode.ai/zen/go/v1"
 #     headers:
 #       X-Opencode-Session: "$X-Opencode-Session"
-#       X-Opencode-Client: "$X-Opencode-Client"
-#       X-Opencode-Project: "$X-Opencode-Project"
-#       X-Opencode-Request: "$X-Opencode-Request"
-#       Accept: "$Accept"
+#     api-key-entries:
+#       - api-key: "${OPENCODE_API_KEY}"
 #     models:
-#       - name: "muse-spark-1.3-contributor-free"
-#         alias: "muse-free"
+#       - name: "glm-5.3"
+#         alias: ""

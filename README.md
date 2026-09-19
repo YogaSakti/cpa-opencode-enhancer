@@ -1,19 +1,35 @@
 # opencode-enhancer
 
-CLIProxyAPI native plugin that makes **OpenCode Go** (`opencode.ai/zen/go/v1`)
-and **OpenCode Zen** (`opencode.ai/zen/v1`) work reliably through CLIProxyAPI.
+CLIProxyAPI native plugin that makes the **OpenCode free tier** usable through
+CLIProxyAPI, on the current inference host
+(`opencode.ai/inference/openai/v1`) and the legacy zen hosts
+(`opencode.ai/zen/v1`, `opencode.ai/zen/go/v1`).
 
-OpenCode monitors upstream traffic and requires every request to:
+OpenCode gates its free tier on the complete official-client fingerprint. A
+request missing any one part is rejected with:
 
-1. carry a **stable `x-opencode-session`** per conversation (sticky routing +
-   prompt-cache affinity; requests missing it may error since 09/06),
-2. identify itself with a **real agent User-Agent** (not a generic SDK /
+```
+403 {"type":"error","error":{"type":"FreeTierError",
+     "message":"OpenCode's free tier can only be used from within OpenCode"}}
+```
+
+Paid models need none of this and are never reshaped. Legacy note: the old
+requirement that *every* request carry a stable `x-opencode-session` and an
+agent User-Agent turned out to hold only for the free tier — a paid model
+answers 200 to a bare `curl` with `stream:false` and no OpenCode headers. The
+one exception is `zen/go/v1`, which returns `400 MissingSessionID` without
+`x-opencode-session`; the plugin supplies it.
+
+Historical context for the paid path:
+
+1. a **stable `x-opencode-session`** per conversation (sticky routing +
+   prompt-cache affinity),
+2. a **real agent User-Agent** (not a generic SDK /
    proxy name like `cli-proxy-openai-compat`),
-3. send **typical coding-agent traffic** (zen free tier rejects Codex
-   `additional_tools` input entries with HTTP 400).
+3. **typical coding-agent traffic**.
 
 CLIProxyAPI's built-in executors drop or mangle these signals. This plugin
-restores them on every request routed to an OpenCode upstream.
+restores them on every free-tier request routed to an OpenCode upstream.
 
 > [!IMPORTANT]
 > **Personal project — no affiliation, no warranty, takedown on request.**
@@ -66,8 +82,28 @@ accepted this disclaimer.
 | **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false` and drops prior-turn `reasoning` / `encrypted_content`. Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
-| User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Modes: `passthrough` (default), `static`, `map`, `template`. |
-| Target detection | `scheduler.pick` + intercept | Marks auths whose provider base URL contains a marker (default `opencode.ai`), plus optional auth-prefix and model-glob matching. |
+| User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
+| Target detection | `request.intercept_after` | Matches the host's auth id against `target.auth_prefixes` as a case-insensitive substring (default `opencode`), plus provider base-URL markers and optional model globs. |
+
+## Endpoints
+
+Verified live 2026-09-19. The current host splits catalog and inference across
+different prefixes, so no single `base-url` serves both.
+
+| URL | `/models` | `/chat/completions` |
+| --- | --- | --- |
+| `https://opencode.ai/inference/openai/v1` | 404 | **200** — use this as `base-url` |
+| `https://opencode.ai/inference/v1` | **200** | 404 — catalog only |
+| `https://opencode.ai/zen/v1` | 200 | 200, separate free-tier quota bucket |
+| `https://opencode.ai/zen/go/v1` | 200 | 200, needs `x-opencode-session` |
+
+Point `base-url` at `/inference/openai/v1`: CLIProxyAPI serves requests from
+the credential's own `models:` list and never needs the catalog, so the 404
+there is harmless. Fetch the catalog by hand from `/inference/v1/models` when
+you want to see what exists.
+
+Keys: the old `sk-…` keys were revoked. Current keys look like `oc_sk_…` and
+work on every host above.
 
 ## Install
 
@@ -132,10 +168,11 @@ fingerprint, so they must be declared too — a header the credential does not
 declare never reaches the wire, and a fingerprint missing one part is a 403.
 
 ```yaml
-# OpenAI-compatible provider (chat completions models)
 openai-compatibility:
-  - name: "opencode-go"
-    base-url: "https://opencode.ai/zen/go/v1"
+  # FREE credential. Keep it free-only: mixing tiers on one credential is what
+  # makes model names ambiguous when aliases drop the -free suffix.
+  - name: "Opencode Free"
+    base-url: "https://opencode.ai/inference/openai/v1"
     headers:
       User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Session: "$X-Opencode-Session"
@@ -144,47 +181,51 @@ openai-compatibility:
       X-Opencode-Request: "$X-Opencode-Request"
       Accept: "$Accept"
     api-key-entries:
-      # Free tier authenticates with the pooled public key, not a personal one.
-      - api-key: "public"
+      - api-key: "${OPENCODE_API_KEY}"   # oc_sk_…
     models:
       - name: "mimo-v2.5-free"
-        alias: "mimo-v2.5-free"
-      # ... add the models you use
+        alias: ""
+      - name: "ling-3.0-flash-fin-free"
+        alias: ""
+      - name: "nemotron-3-ultra-free"
+        alias: ""
+      - name: "nemotron-3.5-lightning-free"
+        alias: ""
 
-# Paid credential — same provider, its own entry, real key, no fingerprint.
-  - name: "opencode-go-paid"
+  # PAID credential. No fingerprint is applied, so it needs no glue beyond the
+  # session header that zen/go/v1 demands.
+  - name: "Opencode Paid"
     base-url: "https://opencode.ai/zen/go/v1"
     headers:
-      User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Session: "$X-Opencode-Session"
-      X-Opencode-Client: "$X-Opencode-Client"
     api-key-entries:
-      - api-key: "${OPENCODE_GO_API_KEY}"
+      - api-key: "${OPENCODE_API_KEY}"   # same key serves both tiers
     models:
       - name: "glm-5.3"
-        alias: "glm-5.3"
-
-# Codex-style provider (responses models, e.g. muse)
-codex-api-key:
-  - api-key: "public"
-    base-url: "https://opencode.ai/zen/v1"
-    headers:
-      X-Opencode-Session: "$X-Opencode-Session"
-      X-Opencode-Client: "$X-Opencode-Client"
-      X-Opencode-Project: "$X-Opencode-Project"
-      X-Opencode-Request: "$X-Opencode-Request"
-      Accept: "$Accept"
-    models:
-      - name: "muse-spark-1.3-contributor-free"
-        alias: "muse-free"
+        alias: ""
+      - name: "deepseek-v4-pro"
+        alias: ""
 ```
 
+If you alias free models to drop the `-free` suffix, make sure the alias does
+not collide with a paid model of the same name on another credential — the
+tier that serves the request then depends on scheduling, and the billing
+differs. Give one side a distinct alias.
+
+Responses-only models (`muse-spark-*-free`, `jev-1.13-free`) answer
+`503 Endpoint is unavailable` on `/chat/completions`. Do not register them on
+an `openai-compatibility` credential; see the warning below for why the codex
+path does not work either.
+
+
 > [!WARNING]
-> **Free-tier muse on the codex path is not fixed yet.** The codex executor
-> applies its own `codex-tui/…` device-profile User-Agent *after* custom
-> headers, so the plugin's `opencode/1.18.31` never reaches the wire and the
-> free-tier gate still fails. Free-tier **chat** models on the
-> `openai-compatibility` path are unaffected. See
+> **Free-tier muse cannot work through CLIProxyAPI.** `muse-spark-*-free` and
+> `jev-1.13-free` are Responses-only: `503 Endpoint is unavailable` on
+> `/chat/completions`, so they cannot go on an `openai-compatibility`
+> credential. On the `codex-api-key` path the executor stamps its own
+> `codex-tui/…` User-Agent *after* custom headers, so the plugin's
+> `opencode/1.18.31` never reaches the wire and the gate rejects it —
+> measured, not assumed. Free-tier **chat** models are unaffected. See
 > [Known limitations](#known-limitations).
 
 `$Name` copies the value from the (plugin-augmented) execution headers; when
@@ -302,34 +343,41 @@ sticky session.
 
 ## Verified behavior
 
-Tested end-to-end against CLIProxyAPI v7.2.157 with a mock OpenCode upstream,
-then live against a production CLIProxyAPI (v7.2.157, systemd) with real
-OpenCode Zen / Go credentials:
+Measured on 2026-09-19 against a production CLIProxyAPI 7.3.8 (systemd) with a
+real `oc_sk_` credential, plugin v0.5.0.
 
 - `registered: true`, `effective_enabled: true` in `/v0/management/plugins`.
-- OpenAI-compat path: wire request carries `User-Agent: codex-tui/0.153.3`
-  (overrides the hardcoded `cli-proxy-openai-compat`), `X-Opencode-Session:
-  <sha256(client session)>`, `X-Opencode-Client: codex`.
-- Codex path: `additional_tools` stripped from `input[]` for `muse-free`;
-  preserved for `muse-spark-1.3-contributor`.
-- Target matching works with **only** `base_url_markers` set (scheduler hook
-  marks auths by provider URL; no prefix/model config needed).
-- Live, per-request observability via `host.log` (opt-in, `logging.enabled:
-  true`; **off by default**): every shaped request logs `session_source`,
-  `session`, `client_type`, `client_ua`, `outbound_ua`, `auth`, `body_shaped`
-  to the CPA log file.
+- Free tier, through CPA, `base-url` `…/inference/openai/v1`, streaming
+  client: `mimo-v2.5-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`
+  and `nemotron-3.5-lightning-free` all return **200** and assemble to `OK`.
+- The same models with a bare request (curl UA, `stream:false`, no OpenCode
+  headers) return **403 FreeTierError**. The fingerprint is what makes the
+  difference, and each gate matters: dropping the tool quartet, or sending
+  `codex-tui/0.153.3` instead of `opencode/1.18.31`, restores the 403.
+- Paid is untouched and unaffected: `glm-5.3-flash` and `deepseek-v4-pro`
+  return 200, and the log shows `fingerprint=false` for them.
+- Wire capture of a shaped request: inbound `User-Agent: curl/8.5.0` with
+  `"stream":false`, outbound `User-Agent: opencode/1.18.31`,
+  `X-Opencode-Client: desktop`, `X-Opencode-Project: global`,
+  `X-Opencode-Session: ses_f56b02280823mByoHc9xwFUV68`,
+  `X-Opencode-Request: msg_0b86c8beb001HxblIuY7sPnQyp`, body `"stream":true`
+  with the `bash/glob/grep/read` tools appended.
+- Per-request observability via `host.log` (opt-in, `logging.enabled: true`,
+  off by default): each shaped request logs `session_source`, `session`,
+  `client_type`, `client_ua`, `outbound_ua`, `auth`, `fingerprint` and
+  `body_shaped`. The missing-glue warning is logged regardless of this flag.
 
 ### Live log example
 
 ```
-opencode-enhancer: shaped auth=openai-compatibility:opencode zen:... body_shaped=false
-  client_type=codex client_ua=codex-tui/0.153.3 outbound_ua=codex-tui/0.153.3
-  session=895dd736... session_source=header model=mimo-v2.5-free
-opencode-enhancer: shaped auth=... body_shaped=false client_type=generic
-  client_ua=python-requests/2.31.0 outbound_ua=opencode-cliproxy/0.2.0
-  session=5fa71b73... session_source=metadata model=mimo-v2.5-free
-opencode-enhancer: shaped auth=... client_type=opencode client_ua=opencode/1.2.3
-  outbound_ua=opencode/1.2.3 session=native (preserved) session_source=native
+opencode-enhancer: shaped auth=openai-compatibility:opencode zen:d4fc8bb50803
+  body_shaped=true client_type=generic client_ua=curl/8.5.0 fingerprint=true
+  identity=desktop outbound_ua=opencode/1.18.31
+  session=ses_f56b02280823mByoHc9xwFUV68 session_source=metadata
+  model=nemotron-3-ultra-free
+opencode-enhancer: shaped auth=... fingerprint=false client_type=codex
+  client_ua=codex-tui/0.153.3 outbound_ua=codex-tui/0.153.3
+  session_source=header model=glm-5.3-flash
 ```
 
 `session_source` values: `header` (client session header), `metadata` (CPA
