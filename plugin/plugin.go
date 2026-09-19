@@ -31,11 +31,18 @@ type Manager struct {
 	// provider base URL matched a configured marker. Bounded by the
 	// number of credentials; reset on reconfigure.
 	knownAuths map[string]struct{}
+	// warnedAuths tracks credentials already warned about the required
+	// header glue. Bounded by the number of credentials; reset on reconfigure.
+	warnedAuths map[string]struct{}
 }
 
 // NewManager returns a dispatcher with default configuration.
 func NewManager() *Manager {
-	return &Manager{cfg: DefaultConfig(), knownAuths: make(map[string]struct{})}
+	return &Manager{
+		cfg:         DefaultConfig(),
+		knownAuths:  make(map[string]struct{}),
+		warnedAuths: make(map[string]struct{}),
+	}
 }
 
 // HandleCall dispatches one RPC method and returns envelope bytes.
@@ -56,6 +63,7 @@ func (m *Manager) HandleCall(method string, payload []byte) ([]byte, error) {
 		m.mu.Lock()
 		m.cfg = DefaultConfig()
 		m.knownAuths = make(map[string]struct{})
+		m.warnedAuths = make(map[string]struct{})
 		m.mu.Unlock()
 		SetLogEnabled(false)
 		return OKEnvelope(struct{}{}), nil
@@ -82,6 +90,7 @@ func (m *Manager) handleLifecycle(payload []byte) ([]byte, error) {
 	m.mu.Lock()
 	m.cfg = cfg
 	m.knownAuths = make(map[string]struct{})
+	m.warnedAuths = make(map[string]struct{})
 	m.mu.Unlock()
 	applyLoggingConfig(cfg)
 	return OKEnvelope(registration()), nil
@@ -117,6 +126,9 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	// quartet. Missing any one of them returns 403 FreeTierError.
 	fingerprint := fingerprintApplies(req.Model, req.RequestedModel, cfg)
 	logValues["fingerprint"] = boolLabel(fingerprint)
+	if fingerprint {
+		m.warnGlueRequirement(metadataString(req.Metadata, "selected_auth_id"), cfg)
+	}
 
 	// 1. Session header. Outside the fingerprint path a native
 	// x-opencode-session (real OpenCode client) is authoritative and is never

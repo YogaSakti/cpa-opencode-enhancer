@@ -249,6 +249,7 @@ plugins:
         force_stream: true                # stream:false is a 403 gate
         inject_tools: ["bash", "glob", "grep", "read"]
         strip_reasoning: true             # Responses: drop prior reasoning items
+        warn_missing_glue: true           # log required credential headers: once per auth
         free_only: true                   # paid builds are never reshaped
 
       body_cleanup:
@@ -387,19 +388,56 @@ marker if you named the credential something without "opencode" in it.
   working independent implementation; the plugin's own coverage is unit tests,
   not a live 200 from Zen.
 
-## Host quirks discovered
+## Why the credential glue cannot be dropped
 
-- `request.intercept_before` **replaces** the whole header set when a
-  non-empty `Headers` map is returned (`finalInterceptorHeaders`), unlike the
-  documented merge semantics. This plugin therefore does all work in
-  `request.intercept_after`, which merges.
+No plugin hook can put a header on the wire. Read against CLIProxyAPI v7.3.8,
+the request path is:
+
+1. `request.intercept_before` / `request.intercept_after` return `Headers`,
+   which `mergeRequestInterceptorHeaders` merges into `opts.Headers`
+   (`sdk/api/handlers/handlers_interceptors.go`).
+2. The executor calls
+   `util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)`
+   (`internal/runtime/executor/openai_compat_executor.go`).
+3. `util.extractCustomHeaders` iterates **`attrs`** — the credential's own
+   `header:` entries — and consults `opts.Headers` *only* to resolve a `$Name`
+   reference. An execution header the credential never declares is never
+   emitted.
+
+The outbound request is also built from scratch (the executor sets
+`Content-Type`, `Authorization` and `User-Agent` itself); client headers are
+not forwarded wholesale. So a header reaches upstream only when the credential
+declares it, by design: the plugin proposes a value, the operator decides
+which headers may leave.
+
+Because a missing declaration is otherwise invisible — upstream just answers
+403 — the plugin logs the exact list of required `headers:` entries once per
+credential the first time it fingerprints a request. That line bypasses
+`logging.enabled`; silence it with `fingerprint.warn_missing_glue: false`.
+
+Two corrections to earlier notes in this README, both wrong:
+
+- `finalInterceptorHeaders` does **not** govern upstream request headers. It
+  is used in `handlers_stream.go` for the **response** headers a stream
+  interceptor returns downstream. `intercept_before` offers no way around the
+  glue, and this plugin's choice of `intercept_after` rests on the merge
+  semantics above, not on that function.
+- Plugin-supplied auth metadata is not a way in either: `AuthRefreshResponse`
+  can carry `headers` metadata, but that hook belongs to the plugin that owns
+  the credential's provider, and a built-in `openai-compatibility` API-key
+  credential has no refresh cycle to hook.
+
+## Other host quirks
+
 - On the codex path the executor applies its own device-profile `User-Agent`
-  after custom headers, so UA glue is ineffective there — but the host's
-  `codex-tui/...` UA is already a validated agent UA, so this is fine.
+  after custom headers, so UA glue is ineffective there. Confirmed against
+  live Zen: `codex-tui/0.153.3` is rejected with 403 even when every other
+  gate is satisfied, which is why free-tier muse cannot work on that path.
 - Config-only alternative for the session header: `X-Opencode-Session:
   "$CPA-SESSION-ID"` in the credential `headers:` map works without any
   plugin when the client sends a recognizable session header, but lacks the
-  body-hash fallback, per-client UA mapping, and zen body cleanup.
+  body-hash fallback, per-client UA mapping, and zen body cleanup. It does
+  not produce the `ses_`-shaped id the free tier requires.
 
 ## Development
 

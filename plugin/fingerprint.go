@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -50,6 +51,10 @@ type FingerprintConfig struct {
 	// A pooled free-tier key cannot decrypt encrypted_content written by a
 	// different upstream account, which returns HTTP 400.
 	StripReasoning *bool `yaml:"strip_reasoning"`
+	// WarnMissingGlue logs the credential headers: entries this plugin depends
+	// on, once per credential. On by default: without them every request is a
+	// silent 403.
+	WarnMissingGlue *bool `yaml:"warn_missing_glue"`
 	// FreeOnly restricts the fingerprint to free-tier models. Paid builds
 	// authenticate normally and must not be reshaped.
 	FreeOnly *bool `yaml:"free_only"`
@@ -61,6 +66,7 @@ const (
 	DefaultFingerprintStream   = true
 	DefaultFingerprintStripRsn = true
 	DefaultFingerprintFreeOnly = true
+	DefaultFingerprintWarnGlue = true
 )
 
 // defaultFingerprintConfig returns the default fingerprint configuration.
@@ -69,16 +75,18 @@ func defaultFingerprintConfig() FingerprintConfig {
 	stream := DefaultFingerprintStream
 	stripReasoning := DefaultFingerprintStripRsn
 	freeOnly := DefaultFingerprintFreeOnly
+	warnGlue := DefaultFingerprintWarnGlue
 	return FingerprintConfig{
-		Enabled:        &enabled,
-		UserAgent:      DefaultFingerprintUA,
-		Client:         DefaultFingerprintClient,
-		Project:        DefaultFingerprintProject,
-		Accept:         DefaultFingerprintAccept,
-		ForceStream:    &stream,
-		InjectTools:    append([]string(nil), defaultFingerprintTools...),
-		StripReasoning: &stripReasoning,
-		FreeOnly:       &freeOnly,
+		Enabled:         &enabled,
+		UserAgent:       DefaultFingerprintUA,
+		Client:          DefaultFingerprintClient,
+		Project:         DefaultFingerprintProject,
+		Accept:          DefaultFingerprintAccept,
+		ForceStream:     &stream,
+		InjectTools:     append([]string(nil), defaultFingerprintTools...),
+		StripReasoning:  &stripReasoning,
+		FreeOnly:        &freeOnly,
+		WarnMissingGlue: &warnGlue,
 	}
 }
 
@@ -128,6 +136,64 @@ func boolLabel(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// requiredGlueHeaders lists the credential `headers:` entries a fingerprinted
+// request needs, in the "<declared name>: $<execution header>" form used in
+// config.yaml.
+//
+// CLIProxyAPI never puts an execution header on the wire on its own: the
+// executor iterates the credential's own `header:` attributes and uses the
+// execution headers *only* to resolve a `$Name` reference
+// (util.extractCustomHeaders). A header the credential does not declare is
+// therefore dropped before the request leaves the proxy, however correctly
+// this plugin set it.
+func requiredGlueHeaders(cfg Config) []string {
+	ua := outboundUAHeader(cfg)
+	session := strings.TrimSpace(cfg.Session.HeaderName)
+	if session == "" {
+		session = DefaultSessionHeaderName
+	}
+	glue := []string{
+		"User-Agent: \"$" + ua + "\"",
+		http.CanonicalHeaderKey(session) + ": \"$" + http.CanonicalHeaderKey(session) + "\"",
+		DefaultIdentityHeader + ": \"$" + DefaultIdentityHeader + "\"",
+		HeaderOpenCodeProject + ": \"$" + HeaderOpenCodeProject + "\"",
+		HeaderOpenCodeRequest + ": \"$" + HeaderOpenCodeRequest + "\"",
+	}
+	if strings.TrimSpace(cfg.Fingerprint.Accept) != "" {
+		glue = append(glue, "Accept: \"$Accept\"")
+	}
+	return glue
+}
+
+// warnGlueRequirement emits one setup line per credential the first time it is
+// fingerprinted. It bypasses logging.enabled on purpose: without the glue
+// every request fails with 403 FreeTierError and nothing else in the logs
+// points at the cause.
+func (m *Manager) warnGlueRequirement(authID string, cfg Config) {
+	if !BoolVal(cfg.Fingerprint.WarnMissingGlue, DefaultFingerprintWarnGlue) {
+		return
+	}
+	key := strings.TrimSpace(authID)
+	if key == "" {
+		key = "(unknown auth)"
+	}
+	m.mu.Lock()
+	if _, done := m.warnedAuths[key]; done {
+		m.mu.Unlock()
+		return
+	}
+	m.warnedAuths[key] = struct{}{}
+	m.mu.Unlock()
+
+	logToHostAlways("warn",
+		"opencode-enhancer: free-tier fingerprint active for auth="+key+
+			" — this credential's headers: map MUST declare all of: "+
+			strings.Join(requiredGlueHeaders(cfg), ", ")+
+			". Undeclared headers are dropped by the executor and upstream answers"+
+			" 403 FreeTierError. Silence with fingerprint.warn_missing_glue: false.",
+		nil)
 }
 
 // ── id shaping ──────────────────────────────────────────────────────────────

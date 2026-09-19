@@ -50,10 +50,23 @@ func applyLoggingConfig(cfg Config) {
 // detail goes into the message, which is always printed.
 func logToHost(level, message string, fields map[string]any) {
 	hostCallMu.RLock()
-	fn := hostCallFn
 	enabled := hostLogEnabled
 	hostCallMu.RUnlock()
-	if !enabled || fn == nil {
+	if !enabled {
+		return
+	}
+	logToHostAlways(level, message, fields)
+}
+
+// logToHostAlways writes to the CLIProxyAPI log regardless of
+// logging.enabled. Reserved for setup errors the operator cannot diagnose
+// any other way: a misconfigured install is otherwise completely silent —
+// upstream answers 403 and nothing in the log points at the cause.
+func logToHostAlways(level, message string, fields map[string]any) {
+	hostCallMu.RLock()
+	fn := hostCallFn
+	hostCallMu.RUnlock()
+	if fn == nil {
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
