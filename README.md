@@ -214,24 +214,45 @@ differs. Give one side a distinct alias.
 
 Responses-only models (`muse-spark-*-free`, `jev-1.13-free`) answer
 `503 Endpoint is unavailable` on `/chat/completions`. Do not register them on
-an `openai-compatibility` credential; see the warning below for why the codex
-path does not work either.
-
+an `openai-compatibility` credential.
 
 > [!WARNING]
-> **Free-tier muse cannot work through CLIProxyAPI.** `muse-spark-*-free` and
-> `jev-1.13-free` are Responses-only: `503 Endpoint is unavailable` on
-> `/chat/completions`, so they cannot go on an `openai-compatibility`
-> credential. On the `codex-api-key` path the executor stamps its own
-> `codex-tui/…` User-Agent *after* custom headers, so the plugin's
-> `opencode/1.18.31` never reaches the wire and the gate rejects it —
-> measured, not assumed. Free-tier **chat** models are unaffected. See
-> [Known limitations](#known-limitations).
+> **Muse cannot be added safely to a normal mixed CLIProxyAPI instance.** Muse
+> needs a `codex-api-key` credential so it uses `/responses`, plus
+> `codex.disable-codex-cloaking: true` so this plugin's OpenCode fingerprint
+> reaches the wire. That cloaking switch is global to the whole Codex executor,
+> including Codex OAuth credentials; it is not scoped to the custom Muse key.
+> Use a dedicated CLIProxyAPI instance for Muse, or wait for CLIProxyAPI to
+> support per-credential cloaking control.
+
+A dedicated Muse instance can use:
+
+```yaml
+codex:
+  disable-codex-cloaking: true
+
+codex-api-key:
+  - api-key: "${OPENCODE_GO_API_KEY}"
+    base-url: "https://opencode.ai/zen/go/v1"
+    headers:
+      User-Agent: "$X-Opencode-User-Agent"
+      X-Opencode-Client: "$X-Opencode-Client"
+      X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Project: "$X-Opencode-Project"
+      X-Opencode-Request: "$X-Opencode-Request"
+      Accept: "$Accept"
+    models:
+      - name: "muse-spark-1.3-contributor"
+        alias: ""
+```
+
+The plugin automatically recognizes `muse-spark-*-contributor` on the
+`zen/go` route as free-tier and applies the complete fingerprint; no
+`free_tier.free_models` entry is needed. This exact isolated configuration was
+verified against CLIProxyAPI 7.3.11 with `response.completed`.
 
 `$Name` copies the value from the (plugin-augmented) execution headers; when
-absent the header is omitted. On the codex path the host sends its own
-`codex-tui/...` User-Agent, which is already a validated agent UA, so no UA
-glue is needed there.
+absent the header is omitted.
 
 ## Breaking changes in 0.5.0
 
@@ -344,7 +365,8 @@ sticky session.
 ## Verified behavior
 
 Measured on 2026-09-19 against a production CLIProxyAPI 7.3.8 (systemd) with a
-real `oc_sk_` credential, plugin v0.5.0.
+real `oc_sk_` credential, plugin v0.5.0. Muse's dedicated Responses path was
+separately verified on 2026-09-22 against CLIProxyAPI 7.3.11 for plugin v0.5.1.
 
 - `registered: true`, `effective_enabled: true` in `/v0/management/plugins`.
 - Free tier, through CPA, `base-url` `…/inference/openai/v1`, streaming
@@ -423,13 +445,12 @@ marker if you named the credential something without "opencode" in it.
 
 ## Known limitations
 
-- **Free-tier muse (codex path) still 403s.** The codex executor stamps its own
-  device-profile `codex-tui/…` User-Agent *after* custom headers, so the
-  plugin's `opencode/1.18.31` never reaches the wire. The free tier rejects
-  any non-`opencode/>=1.17` UA, so muse free models keep failing there until
-  CLIProxyAPI lets a plugin win that header. Free-tier **chat** models on the
-  `openai-compatibility` path are unaffected. Paid muse is unaffected: it is
-  never fingerprinted.
+- **Muse requires a Responses credential.** The plugin can shape a Muse
+  request but cannot change the executor selected by CLIProxyAPI. Configure
+  Muse under `codex-api-key`, not `openai-compatibility`. Because the required
+  `codex.disable-codex-cloaking` switch also affects Codex OAuth, the supported
+  deployment is a dedicated Muse instance until CLIProxyAPI offers a per-key
+  switch.
 - **`force_stream: true` breaks non-streaming clients.** The free tier rejects
   `stream: false` outright, so the plugin flips it; a client that asked for a
   non-streamed response then gets SSE the executor does not expect. Those
@@ -485,10 +506,11 @@ Two corrections to earlier notes in this README, both wrong:
 
 ## Other host quirks
 
-- On the codex path the executor applies its own device-profile `User-Agent`
-  after custom headers, so UA glue is ineffective there. Confirmed against
-  live Zen: `codex-tui/0.153.3` is rejected with 403 even when every other
-  gate is satisfied, which is why free-tier muse cannot work on that path.
+- On CLIProxyAPI builds with codex cloaking enabled, the executor applies its
+  own device-profile `User-Agent` after custom headers. OpenCode rejects that
+  value for free-tier Muse. Disabling cloaking fixes Muse but currently applies
+  to every Codex credential, including OAuth; do it only on a dedicated Muse
+  instance.
 - Config-only alternative for the session header: `X-Opencode-Session:
   "$CPA-SESSION-ID"` in the credential `headers:` map works without any
   plugin when the client sends a recognizable session header, but lacks the
