@@ -68,10 +68,8 @@ func isZenFreeTierModel(model string, cfg FreeTierConfig) bool {
 	if m == "" {
 		return false
 	}
-	for _, paid := range cfg.PaidModels {
-		if p := lastSegment(paid); p != "" && m == p {
-			return false
-		}
+	if isExplicitPaidModel(m, cfg) {
+		return false
 	}
 	for _, free := range cfg.FreeModels {
 		if f := lastSegment(free); f != "" && m == f {
@@ -81,6 +79,40 @@ func isZenFreeTierModel(model string, cfg FreeTierConfig) bool {
 	for _, marker := range cfg.Markers {
 		mk := strings.ToLower(strings.TrimSpace(marker))
 		if mk != "" && strings.HasSuffix(m, mk) {
+			return true
+		}
+	}
+	return false
+}
+
+// isZenGoMuseContributor reports whether the request targets Muse Contributor
+// on OpenCode Go. Go serves these builds from its free tier without a -free
+// suffix, so model-marker classification alone cannot recognize them.
+func isZenGoMuseContributor(req RequestInterceptRequest, cfg FreeTierConfig) bool {
+	baseURL := strings.ToLower(metadataString(req.Metadata, "base_url"))
+	if baseURL == "" {
+		baseURL = strings.ToLower(req.Headers.Get("X-CPA-Base-URL"))
+	}
+	selectedAuth := strings.ToLower(metadataString(req.Metadata, "selected_auth_id"))
+	selectedIndex := strings.ToLower(metadataString(req.Metadata, "selected_auth_index"))
+	if !strings.Contains(baseURL, "/zen/go/") &&
+		!strings.Contains(selectedAuth, "opencode go") &&
+		!strings.Contains(selectedIndex, "opencode go") {
+		return false
+	}
+
+	for _, model := range []string{req.Model, req.RequestedModel} {
+		m := lastSegment(model)
+		if !isExplicitPaidModel(m, cfg) && strings.HasPrefix(m, "muse-spark-") && strings.HasSuffix(m, "-contributor") {
+			return true
+		}
+	}
+	return false
+}
+
+func isExplicitPaidModel(model string, cfg FreeTierConfig) bool {
+	for _, paid := range cfg.PaidModels {
+		if p := lastSegment(paid); p != "" && model == p {
 			return true
 		}
 	}

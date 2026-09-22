@@ -92,15 +92,16 @@ func defaultFingerprintConfig() FingerprintConfig {
 
 // fingerprintApplies reports whether the free-tier fingerprint should be
 // applied to this request.
-func fingerprintApplies(model, requestedModel string, cfg Config) bool {
+func fingerprintApplies(req RequestInterceptRequest, cfg Config) bool {
 	if !BoolVal(cfg.Fingerprint.Enabled, DefaultFingerprintEnabled) {
 		return false
 	}
 	if !BoolVal(cfg.Fingerprint.FreeOnly, DefaultFingerprintFreeOnly) {
 		return true
 	}
-	return isZenFreeTierModel(model, cfg.FreeTier) ||
-		isZenFreeTierModel(requestedModel, cfg.FreeTier)
+	return isZenFreeTierModel(req.Model, cfg.FreeTier) ||
+		isZenFreeTierModel(req.RequestedModel, cfg.FreeTier) ||
+		isZenGoMuseContributor(req, cfg.FreeTier)
 }
 
 // fingerprintTools returns the configured tool quartet, or the default.

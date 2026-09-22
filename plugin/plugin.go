@@ -113,7 +113,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	// The Zen free tier gates on the *whole* official-client fingerprint:
 	// UA, client/project/session/request headers, streaming, and the tool
 	// quartet. Missing any one of them returns 403 FreeTierError.
-	fingerprint := fingerprintApplies(req.Model, req.RequestedModel, cfg)
+	fingerprint := fingerprintApplies(req, cfg)
 	logValues["fingerprint"] = strconv.FormatBool(fingerprint)
 	if fingerprint {
 		m.warnGlueRequirement(metadataString(req.Metadata, "selected_auth_id"), cfg)

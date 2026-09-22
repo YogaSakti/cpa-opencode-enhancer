@@ -121,16 +121,35 @@ func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 
 func TestFingerprintAppliesOnlyToFreeModels(t *testing.T) {
 	cfg := DefaultConfig()
-	if !fingerprintApplies("mimo-v2.5-free", "", cfg) {
+	if !fingerprintApplies(RequestInterceptRequest{Model: "mimo-v2.5-free"}, cfg) {
 		t.Fatal("free model must get the fingerprint")
 	}
-	if fingerprintApplies("muse-spark-1.3-contributor", "", cfg) {
+	if fingerprintApplies(RequestInterceptRequest{
+		Model:    "muse-spark-1.3-contributor",
+		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+	}, cfg) {
 		t.Fatal("paid build must not be reshaped")
 	}
 	disabled := false
 	cfg.Fingerprint.Enabled = &disabled
-	if fingerprintApplies("mimo-v2.5-free", "", cfg) {
+	if fingerprintApplies(RequestInterceptRequest{Model: "mimo-v2.5-free"}, cfg) {
 		t.Fatal("fingerprint.enabled=false must disable the path")
+	}
+}
+
+func TestFingerprintAppliesToMuseContributorOnOpenCodeGo(t *testing.T) {
+	cfg := DefaultConfig()
+	req := RequestInterceptRequest{
+		Model:    "muse-spark-1.3-contributor",
+		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/go/v1"},
+	}
+	if !fingerprintApplies(req, cfg) {
+		t.Fatal("OpenCode Go Muse Contributor must get the free-tier fingerprint automatically")
+	}
+
+	cfg.FreeTier.PaidModels = []string{"muse-spark-1.3-contributor"}
+	if fingerprintApplies(req, cfg) {
+		t.Fatal("paid_models override must disable the automatic Go Muse fingerprint")
 	}
 }
 
@@ -194,9 +213,9 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	}
 }
 
-// TestInterceptAfterPaidModelUntouched guards the paid path: no fingerprint,
-// no forced streaming, no injected tools.
-func TestInterceptAfterPaidModelUntouched(t *testing.T) {
+// TestInterceptAfterPaidMuseModelUntouched guards the paid Zen path: no
+// fingerprint, no forced streaming, no injected tools.
+func TestInterceptAfterPaidMuseModelUntouched(t *testing.T) {
 	m := NewManager()
 	req := RequestInterceptRequest{
 		RequestID: "req-2",
@@ -229,6 +248,49 @@ func TestInterceptAfterPaidModelUntouched(t *testing.T) {
 	}
 	if got := resp.Headers.Get("X-Opencode-User-Agent"); got != "codex-tui/0.153.3" {
 		t.Fatalf("paid request UA = %q, want the client's own UA passed through", got)
+	}
+}
+
+func TestInterceptAfterGoMuseContributorFingerprint(t *testing.T) {
+	m := NewManager()
+	req := RequestInterceptRequest{
+		RequestID: "req-go-muse",
+		Model:     "muse-spark-1.3-contributor",
+		Headers: http.Header{
+			"User-Agent": []string{"codex-tui/0.153.3"},
+			"Session-Id": []string{"conv-abc"},
+		},
+		Body:     []byte(`{"model":"muse-spark-1.3-contributor","stream":false,"input":"hi"}`),
+		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/go/v1"},
+	}
+	payload, _ := json.Marshal(req)
+	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
+	if err != nil {
+		t.Fatalf("HandleCall: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var resp RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if got := resp.Headers.Get("User-Agent"); got != DefaultFingerprintUA {
+		t.Fatalf("User-Agent = %q, want %q", got, DefaultFingerprintUA)
+	}
+	if got := resp.Headers.Get("x-opencode-session"); !isOpenCodeSessionID(got) {
+		t.Fatalf("x-opencode-session = %q, want the ses_ shape", got)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal shaped body: %v", err)
+	}
+	if body["stream"] != true {
+		t.Fatalf("stream = %v, want true", body["stream"])
+	}
+	if len(body["tools"].([]any)) != len(defaultFingerprintTools) {
+		t.Fatalf("tools = %v, want the quartet", body["tools"])
 	}
 }
 

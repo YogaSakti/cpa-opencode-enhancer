@@ -50,7 +50,8 @@ plugins:
       # --- Free vs paid classification (gates the whole fingerprint) ---
       free_tier:
         markers: ["-free", ":free"]
-        free_models: []               # nama eksak yang dianggap free
+        # muse-spark-*-contributor on zen/go is auto-detected as free-tier.
+        free_models: []               # nama eksak lain yang dianggap free
         paid_models: []               # nama eksak yang tidak pernah di-reshape
 
       # --- OpenCode Zen free-tier client fingerprint ---
@@ -96,6 +97,12 @@ plugins:
 #   https://opencode.ai/zen/go/v1             both 200, needs x-opencode-session
 # The 404 is harmless: CLIProxyAPI serves from the credential's own models: list.
 # Keys: old sk-… keys were revoked; current keys look like oc_sk_… .
+# Responses-only Muse cannot use this openai-compatibility block. It needs a
+# codex-api-key credential plus codex.disable-codex-cloaking: true, which is a
+# GLOBAL Codex-executor switch and also affects Codex OAuth. Run Muse in a
+# dedicated CLIProxyAPI instance until the host supports per-key cloaking.
+# The plugin then auto-fingerprints muse-spark-*-contributor on zen/go.
+# See README "Muse cannot be added safely" for the complete header map.
 #
 # openai-compatibility:
 #   # FREE credential -- keep it free-only so aliases stay unambiguous.
