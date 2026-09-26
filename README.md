@@ -65,7 +65,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet, declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry it upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
@@ -490,6 +490,13 @@ name at all: target it with `target.models`.
   non-streamed response then gets SSE the executor does not expect. Those
   requests would have 403'd anyway. Set `fingerprint.force_stream: false` if
   you would rather keep the client's own choice and lose the free tier.
+- **Translated requests keep the client's own stream flag.** When
+  CLIProxyAPI translates between protocols (a Claude or Gemini client to an
+  OpenAI upstream), the translator takes `stream` from the original request,
+  not from the body the plugin returns (`openai_claude_request.go`). A
+  non-streaming Claude or Gemini client therefore still gets `403
+  FreeTierError`. Claude Code always streams; Gemini clients must use
+  `:streamGenerateContent`.
 - **The fingerprint is a moving target.** `opencode/1.18.31`, the tool quartet,
   and the `ses_`/`msg_` id shapes track a specific client release. When
   upstream changes its gates, update `fingerprint.user_agent` /

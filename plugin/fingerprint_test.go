@@ -46,7 +46,7 @@ func TestIsOpenCodeSessionIDRejectsRawHash(t *testing.T) {
 
 func TestApplyFingerprintBodyChatPath(t *testing.T) {
 	in := []byte(`{"model":"mimo-v2.5-free","stream":false,"tools":[{"type":"function","function":{"name":"bash"}}]}`)
-	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "")
+	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "", "")
 	if !changed {
 		t.Fatal("expected the chat body to be rewritten")
 	}
@@ -75,7 +75,7 @@ func TestApplyFingerprintBodyResponsesPath(t *testing.T) {
 	in := []byte(`{"model":"muse-spark-1.3-contributor-free","max_tokens":4096,"input":[` +
 		`{"type":"reasoning","encrypted_content":"xx"},` +
 		`{"type":"message","role":"user","encrypted_content":"yy","content":"hi"}]}`)
-	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "")
+	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "", "")
 	if !changed {
 		t.Fatal("expected the responses body to be rewritten")
 	}
@@ -110,12 +110,126 @@ func TestApplyFingerprintBodyResponsesPath(t *testing.T) {
 
 func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 	cfg := defaultFingerprintConfig()
-	first, changed := applyFingerprintBody([]byte(`{"model":"mimo-v2.5-free"}`), cfg, "")
+	first, changed := applyFingerprintBody([]byte(`{"model":"mimo-v2.5-free"}`), cfg, "", "")
 	if !changed {
 		t.Fatal("first pass should rewrite")
 	}
-	if _, changed := applyFingerprintBody(first, cfg, ""); changed {
+	if _, changed := applyFingerprintBody(first, cfg, "", ""); changed {
 		t.Fatal("second pass rewrote an already-shaped body")
+	}
+}
+
+// A Claude Messages body must get the quartet in Anthropic shape: the host's
+// Claude translators read tools[].name / input_schema, so a chat-shaped entry
+// reaches upstream nameless (400 on /responses, dropped then 403 on chat).
+func TestApplyFingerprintBodyClaudePath(t *testing.T) {
+	in := []byte(`{"model":"muse-spark-1.2-contributor-free","max_tokens":256,` +
+		`"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"name":"bash","description":"client bash","input_schema":{"type":"object"}}]}`)
+	cfg := defaultFingerprintConfig()
+	out, changed := applyFingerprintBody(in, cfg, "claude", "codex")
+	if !changed {
+		t.Fatal("expected the Claude body to be rewritten")
+	}
+	var root map[string]any
+	if err := json.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal rewritten body: %v", err)
+	}
+	if root["stream"] != true {
+		t.Fatalf("stream = %v, want true", root["stream"])
+	}
+	tools := root["tools"].([]any)
+	if len(tools) != len(defaultFingerprintTools) {
+		t.Fatalf("tools = %v, want the quartet with the client's bash kept once", tools)
+	}
+	for _, tool := range tools {
+		m := tool.(map[string]any)
+		if m["name"] == nil || m["input_schema"] == nil || m["function"] != nil || m["type"] != nil {
+			t.Fatalf("tool %v is not in Anthropic shape", m)
+		}
+		if m["name"] == "bash" && m["description"] != "client bash" {
+			t.Fatalf("client's own bash tool was replaced: %v", m)
+		}
+	}
+	if _, changed := applyFingerprintBody(out, cfg, "claude", "codex"); changed {
+		t.Fatal("second pass rewrote an already-shaped Claude body")
+	}
+}
+
+// A Gemini body declares tools as tools[].functionDeclarations and streams
+// by URL, so no top-level stream key is added.
+func TestApplyFingerprintBodyGeminiPath(t *testing.T) {
+	cfg := defaultFingerprintConfig()
+	for name, in := range map[string]string{
+		"existing group": `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` +
+			`"tools":[{"functionDeclarations":[{"name":"grep","description":"client grep"}]}]}`,
+		"no tools": `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
+	} {
+		out, changed := applyFingerprintBody([]byte(in), cfg, "gemini", "openai")
+		if !changed {
+			t.Fatalf("%s: expected the Gemini body to be rewritten", name)
+		}
+		var root map[string]any
+		if err := json.Unmarshal(out, &root); err != nil {
+			t.Fatalf("%s: unmarshal rewritten body: %v", name, err)
+		}
+		if _, ok := root["stream"]; ok {
+			t.Fatalf("%s: stream must not be added to a Gemini body", name)
+		}
+		tools := root["tools"].([]any)
+		if len(tools) != 1 {
+			t.Fatalf("%s: tools = %v, want one functionDeclarations group", name, tools)
+		}
+		decls := tools[0].(map[string]any)["functionDeclarations"].([]any)
+		names := map[string]int{}
+		for _, d := range decls {
+			names[toolName(d)]++
+		}
+		for _, want := range defaultFingerprintTools {
+			if names[want] != 1 {
+				t.Fatalf("%s: declaration %q count = %d in %v", name, want, names[want], decls)
+			}
+		}
+		if _, changed := applyFingerprintBody(out, cfg, "gemini", "openai"); changed {
+			t.Fatalf("%s: second pass rewrote an already-shaped Gemini body", name)
+		}
+	}
+}
+
+// The live failure: Claude Code (/v1/messages) to Muse on a codex-api-key
+// credential answered 400 "tools[0] missing required field name".
+func TestInterceptAfterClaudeClientToMuse(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  models: [\"muse-*\"]\n")
+	req := RequestInterceptRequest{
+		RequestID:    "req-claude-muse",
+		SourceFormat: "claude",
+		ToFormat:     "codex",
+		Model:        "muse-spark-1.2-contributor-free",
+		Headers:      http.Header{"Session-Id": []string{"conv-abc"}},
+		Body:         []byte(`{"model":"muse-spark-1.2-contributor","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`),
+		Metadata:     map[string]any{"selected_auth_id": "codex:apikey:5faa5798d3a4"},
+	}
+	payload, _ := json.Marshal(req)
+	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
+	if err != nil {
+		t.Fatalf("HandleCall: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var resp RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal shaped body: %v", err)
+	}
+	for _, tool := range body["tools"].([]any) {
+		if m := tool.(map[string]any); m["name"] == nil || m["input_schema"] == nil {
+			t.Fatalf("tool %v is not in Anthropic shape", m)
+		}
 	}
 }
 
@@ -134,7 +248,7 @@ const codexLiteBody = `{"model":"muse-spark-1.3-contributor-free","stream":true,
 
 func TestApplyFingerprintBodyStripsAdditionalToolsOnResponsesWire(t *testing.T) {
 	cfg := defaultFingerprintConfig()
-	out, changed := applyFingerprintBody([]byte(codexLiteBody), cfg, "codex")
+	out, changed := applyFingerprintBody([]byte(codexLiteBody), cfg, "", "codex")
 	if !changed {
 		t.Fatal("expected additional_tools to be stripped for a codex upstream")
 	}
@@ -173,7 +287,7 @@ func TestApplyFingerprintBodyStripsAdditionalToolsOnResponsesWire(t *testing.T) 
 		t.Fatalf("tools contain duplicate names: %v", root["tools"])
 	}
 
-	if _, changed := applyFingerprintBody(out, cfg, "codex"); changed {
+	if _, changed := applyFingerprintBody(out, cfg, "", "codex"); changed {
 		t.Fatal("second pass rewrote an already-stripped body")
 	}
 }
@@ -195,7 +309,7 @@ func TestApplyFingerprintBodyKeepsAdditionalToolsForTranslatedTargets(t *testing
 		{"disabled", disabled.Fingerprint, "codex"},
 	}
 	for _, tc := range cases {
-		out, _ := applyFingerprintBody([]byte(codexLiteBody), tc.cfg, tc.toFormat)
+		out, _ := applyFingerprintBody([]byte(codexLiteBody), tc.cfg, "", tc.toFormat)
 		var root map[string]any
 		if err := json.Unmarshal(out, &root); err != nil {
 			t.Fatalf("%s: unmarshal body: %v", tc.name, err)
