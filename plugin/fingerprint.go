@@ -262,9 +262,12 @@ func newRequestID() string {
 // applyFingerprintBody rewrites a request body so it passes the Zen free-tier
 // gates: streaming forced on, the official tool quartet declared, and (on the
 // Responses path) no stored state, undecryptable prior reasoning, or
-// additional_tools items. toFormat is the host's selected upstream protocol.
+// additional_tools items. The body is still in the client's protocol
+// (sourceFormat); the host translates it afterwards, so the quartet must be
+// declared in that protocol's shape or the translator drops it. toFormat is
+// the host's selected upstream protocol.
 // Returns the rewritten body and whether anything changed.
-func applyFingerprintBody(body []byte, cfg FingerprintConfig, toFormat string) ([]byte, bool) {
+func applyFingerprintBody(body []byte, cfg FingerprintConfig, sourceFormat, toFormat string) ([]byte, bool) {
 	if len(body) == 0 {
 		return body, false
 	}
@@ -274,9 +277,11 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig, toFormat string) (
 	}
 
 	changed := false
+	source := strings.ToLower(strings.TrimSpace(sourceFormat))
 
 	// Gate: stream:false is rejected with 403 even when every header is right.
-	if BoolVal(cfg.ForceStream, DefaultFingerprintStream) {
+	// Gemini carries streaming in the URL, not the body.
+	if source != "gemini" && BoolVal(cfg.ForceStream, DefaultFingerprintStream) {
 		if v, ok := root["stream"].(bool); !ok || !v {
 			root["stream"] = true
 			changed = true
@@ -305,6 +310,14 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig, toFormat string) (
 			}
 		}
 		if ensureTools(root, tools, responsesToolEntry) {
+			changed = true
+		}
+	} else if source == "claude" {
+		if ensureTools(root, tools, claudeToolEntry) {
+			changed = true
+		}
+	} else if source == "gemini" {
+		if ensureGeminiTools(root, tools) {
 			changed = true
 		}
 	} else if ensureTools(root, tools, chatToolEntry) {
@@ -343,6 +356,64 @@ func responsesToolEntry(name string) map[string]any {
 	}
 }
 
+// claudeToolEntry builds an Anthropic Messages tool declaration.
+func claudeToolEntry(name string) map[string]any {
+	return map[string]any{
+		"name":         name,
+		"description":  "OpenCode built-in " + name + " tool",
+		"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+// ensureGeminiTools adds any missing fingerprint tool to the first
+// tools[].functionDeclarations group (creating one if needed), the only shape
+// the host's Gemini translators read. Reports whether it added anything.
+func ensureGeminiTools(root map[string]any, names []string) bool {
+	tools, _ := root["tools"].([]any)
+	present := map[string]struct{}{}
+	var group map[string]any
+	for _, tool := range tools {
+		m, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		decls, ok := m["functionDeclarations"].([]any)
+		if !ok {
+			continue
+		}
+		if group == nil {
+			group = m
+		}
+		for _, decl := range decls {
+			if name := toolName(decl); name != "" {
+				present[name] = struct{}{}
+			}
+		}
+	}
+	var missing []any
+	for _, name := range names {
+		if _, ok := present[name]; !ok {
+			missing = append(missing, map[string]any{
+				"name":        name,
+				"description": "OpenCode built-in " + name + " tool",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			})
+			present[name] = struct{}{}
+		}
+	}
+	if len(missing) == 0 {
+		return false
+	}
+	if group == nil {
+		group = map[string]any{}
+		tools = append(tools, group)
+	}
+	decls, _ := group["functionDeclarations"].([]any)
+	group["functionDeclarations"] = append(decls, missing...)
+	root["tools"] = tools
+	return true
+}
+
 // ensureTools appends any missing fingerprint tool to root["tools"], leaving
 // the client's own tools untouched. Reports whether it added anything.
 func ensureTools(root map[string]any, names []string, build func(string) map[string]any) bool {
@@ -369,7 +440,8 @@ func ensureTools(root map[string]any, names []string, build func(string) map[str
 	return true
 }
 
-// toolName extracts a tool's name from either the chat or responses shape.
+// toolName extracts a tool's name from the chat, responses, Claude or Gemini
+// declaration shape.
 func toolName(tool any) string {
 	m, ok := tool.(map[string]any)
 	if !ok {
