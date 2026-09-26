@@ -207,8 +207,10 @@ func TestApplyFingerprintBodyKeepsAdditionalToolsForTranslatedTargets(t *testing
 	}
 }
 
+// Muse runs on a codex-api-key credential, whose auth id names no provider,
+// so the operator targets it by model glob.
 func TestInterceptAfterStripsAdditionalToolsForMuseFree(t *testing.T) {
-	m := NewManager()
+	m := newConfiguredManager(t, "target:\n  models: [\"muse-*\"]\n")
 	req := RequestInterceptRequest{
 		RequestID:      "req-muse-lite",
 		SourceFormat:   "openai-response",
@@ -217,7 +219,7 @@ func TestInterceptAfterStripsAdditionalToolsForMuseFree(t *testing.T) {
 		RequestedModel: "muse-free(high)",
 		Headers:        http.Header{"Session-Id": []string{"conv-abc"}},
 		Body:           []byte(codexLiteBody),
-		Metadata:       map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+		Metadata:       map[string]any{"selected_auth_id": "codex:apikey:5faa5798d3a4"},
 	}
 	payload, _ := json.Marshal(req)
 	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
@@ -249,7 +251,7 @@ func TestFingerprintAppliesOnlyToFreeModels(t *testing.T) {
 	}
 	if fingerprintApplies(RequestInterceptRequest{
 		Model:    "muse-spark-1.3-contributor",
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode zen:1"},
 	}, cfg) {
 		t.Fatal("paid build must not be reshaped")
 	}
@@ -264,7 +266,7 @@ func TestFingerprintAppliesToMuseContributorOnOpenCodeGo(t *testing.T) {
 	cfg := DefaultConfig()
 	req := RequestInterceptRequest{
 		Model:    "muse-spark-1.3-contributor",
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/go/v1"},
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode go:1"},
 	}
 	if !fingerprintApplies(req, cfg) {
 		t.Fatal("OpenCode Go Muse Contributor must get the free-tier fingerprint automatically")
@@ -288,7 +290,7 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 			"Session-Id": []string{"conv-abc"},
 		},
 		Body:     []byte(`{"model":"mimo-v2.5-free","stream":false}`),
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/go/v1"},
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode go:1"},
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -348,7 +350,7 @@ func TestInterceptAfterPaidMuseModelUntouched(t *testing.T) {
 			"Session-Id": []string{"conv-abc"},
 		},
 		Body:     []byte(`{"model":"muse-spark-1.3-contributor","stream":false}`),
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode zen:1"},
 	}
 	payload, _ := json.Marshal(req)
 	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
@@ -384,7 +386,7 @@ func TestInterceptAfterGoMuseContributorFingerprint(t *testing.T) {
 			"Session-Id": []string{"conv-abc"},
 		},
 		Body:     []byte(`{"model":"muse-spark-1.3-contributor","stream":false,"input":"hi"}`),
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/go/v1"},
+		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode go:1"},
 	}
 	payload, _ := json.Marshal(req)
 	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)

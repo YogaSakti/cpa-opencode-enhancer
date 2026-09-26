@@ -50,7 +50,8 @@ plugins:
       # --- Free vs paid classification (gates the whole fingerprint) ---
       free_tier:
         markers: ["-free", ":free"]
-        # muse-spark-*-contributor on zen/go is auto-detected as free-tier.
+        # muse-spark-*-contributor is auto-detected only on an
+        # openai-compatibility credential named "Opencode Go".
         free_models: []               # nama eksak lain yang dianggap free
         paid_models: []               # nama eksak yang tidak pernah di-reshape
 
@@ -78,11 +79,9 @@ plugins:
 
       # --- Target detection ---
       target:
-        base_url_markers:
-          - "opencode.ai"
         auth_prefixes:
           - "opencode"        # substring match on the host auth id
-        models: []           # optional model globs, e.g. ["muse-*"]
+        models: []           # model globs; a codex-api-key credential (Muse) needs one: ["muse-*"]
 
 # --- Credential glue (REQUIRED on every free-tier OpenCode credential) ---
 # The plugin injects headers into the execution headers; built-in executors
@@ -90,20 +89,13 @@ plugins:
 # does not declare never reaches the wire, and a fingerprint missing one part
 # is a 403.
 #
-# Endpoints (verified 2026-09-19): catalog and inference live at different
-# prefixes on the current host, so no single base-url serves both.
-#   https://opencode.ai/inference/openai/v1   /models 404, /chat/completions 200  <- use this
-#   https://opencode.ai/inference/v1          /models 200, /chat/completions 404
-#   https://opencode.ai/zen/v1                both 200, separate free quota bucket
-#   https://opencode.ai/zen/go/v1             both 200, needs x-opencode-session
-# The 404 is harmless: CLIProxyAPI serves from the credential's own models: list.
-# Keys: old sk-… keys were revoked; current keys look like oc_sk_… .
-# Responses-only Muse cannot use this openai-compatibility block. It needs a
-# codex-api-key credential plus codex.disable-codex-cloaking: true, which is a
-# GLOBAL Codex-executor switch and also affects Codex OAuth. Run Muse in a
-# dedicated CLIProxyAPI instance until the host supports per-key cloaking.
-# The plugin then auto-fingerprints muse-spark-*-contributor on zen/go.
-# See README "Muse cannot be added safely" for the complete header map.
+# Endpoints: catalog and inference live at different prefixes, so no single
+# base-url serves both; CLIProxyAPI serves from the credential's models: list.
+#   https://opencode.ai/zen/v1                /chat/completions + /responses (Muse)
+#   https://opencode.ai/inference/openai/v1   /chat/completions (catalog 404)
+#   https://opencode.ai/inference/v1          catalog only
+#   https://opencode.ai/zen/go/v1             Go subscription, needs x-opencode-session
+# Keys look like oc_sk_… ; old sk-… keys were revoked.
 #
 # openai-compatibility:
 #   # FREE credential -- keep it free-only so aliases stay unambiguous.
@@ -133,4 +125,24 @@ plugins:
 #       - api-key: "${OPENCODE_API_KEY}"
 #     models:
 #       - name: "glm-5.3"
+#         alias: ""
+#
+# Muse is Responses-only: it needs a codex-api-key credential (posts to
+# <base-url>/responses) plus target.models: ["muse-*"] above, because a
+# codex-api-key auth id ("codex:apikey:<hash>") names no provider.
+# disable-codex-cloaking per credential needs CLIProxyAPI >= 7.3.17.
+#
+# codex-api-key:
+#   - api-key: "${OPENCODE_API_KEY}"
+#     base-url: "https://opencode.ai/zen/v1"   # no /responses suffix
+#     disable-codex-cloaking: true
+#     headers:
+#       User-Agent: "$X-Opencode-User-Agent"
+#       X-Opencode-Client: "$X-Opencode-Client"
+#       X-Opencode-Session: "$X-Opencode-Session"
+#       X-Opencode-Project: "$X-Opencode-Project"
+#       X-Opencode-Request: "$X-Opencode-Request"
+#       Accept: "$Accept"
+#     models:
+#       - name: "muse-spark-1.3-contributor-free"
 #         alias: ""

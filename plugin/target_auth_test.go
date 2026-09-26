@@ -31,16 +31,22 @@ func TestIsTargetMatchesHostDerivedAuthIDs(t *testing.T) {
 	}
 }
 
-// TestIsTargetStillMatchesBaseURL guards the other detection path: when the
-// host does populate base_url metadata, the marker alone must be enough.
-func TestIsTargetStillMatchesBaseURL(t *testing.T) {
+// TestIsTargetCodexAPIKeyNeedsModelGlob guards the Muse transport: the host
+// passes no base URL to interceptors and a codex-api-key auth id carries no
+// provider name, so only a target.models glob selects it. Without one the
+// request goes out unshaped and upstream answers 403 FreeTierError.
+func TestIsTargetCodexAPIKeyNeedsModelGlob(t *testing.T) {
 	cfg := DefaultConfig()
 	req := RequestInterceptRequest{
-		Model:    "mimo-v2.5-free",
-		Metadata: map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+		Model:    "muse-spark-1.3-contributor-free",
+		Metadata: map[string]any{"selected_auth_id": "codex:apikey:5faa5798d3a4"},
 	}
+	if isTarget(req, cfg) {
+		t.Fatal("default config matched a codex-api-key auth id")
+	}
+	cfg.Target.Models = []string{"muse-*"}
 	if !isTarget(req, cfg) {
-		t.Fatal("base_url marker did not match")
+		t.Fatal("target.models glob did not select the codex-api-key credential")
 	}
 }
 
@@ -49,7 +55,6 @@ func TestIsTargetStillMatchesBaseURL(t *testing.T) {
 func TestIsTargetIgnoresBlankMarkers(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Target.AuthPrefixes = []string{"", "   "}
-	cfg.Target.BaseURLMarkers = nil
 	req := RequestInterceptRequest{
 		Model:    "mimo-v2.5-free",
 		Metadata: map[string]any{"selected_auth_id": "openai-compatible-openrouter"},

@@ -221,6 +221,7 @@ func registration() Registration {
 				{Name: "fingerprint.warn_missing_glue", Type: "boolean", Description: "Log the credential headers: entries the fingerprint depends on, once per auth."},
 				{Name: "session.header_name", Type: "string", Description: "Header injected with the resolved OpenCode session id."},
 				{Name: "target.auth_prefixes", Type: "array", Description: "Substrings of the host auth id that enable shaping."},
+				{Name: "target.models", Type: "array", Description: "Model globs that enable shaping; codex-api-key credentials (Muse) need one, e.g. muse-*."},
 			},
 		},
 		Capabilities: Capabilities{
@@ -244,8 +245,8 @@ func validateConfig(cfg Config) error {
 			return fmt.Errorf("header name contains invalid characters: %s", name)
 		}
 	}
-	if len(cfg.Target.BaseURLMarkers) == 0 && len(cfg.Target.AuthPrefixes) == 0 && len(cfg.Target.Models) == 0 {
-		return fmt.Errorf("at least one of target.base_url_markers, target.auth_prefixes, or target.models is required")
+	if len(cfg.Target.AuthPrefixes) == 0 && len(cfg.Target.Models) == 0 {
+		return fmt.Errorf("at least one of target.auth_prefixes or target.models is required")
 	}
 	return nil
 }
