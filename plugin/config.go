@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.5.2"
+	PluginVersion = "0.5.3"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 
@@ -75,9 +75,11 @@ type FreeTierConfig struct {
 
 // TargetConfig controls which requests are intercepted.
 type TargetConfig struct {
-	BaseURLMarkers []string `yaml:"base_url_markers"`
-	AuthPrefixes   []string `yaml:"auth_prefixes"`
-	Models         []string `yaml:"models"`
+	AuthPrefixes []string `yaml:"auth_prefixes"`
+	// Models are globs matched against the upstream and requested model. A
+	// codex-api-key credential (the only transport for Responses-only Muse)
+	// has an auth id without a provider name, so it needs one, e.g. "muse-*".
+	Models []string `yaml:"models"`
 }
 
 // DefaultConfig returns a fully populated default configuration.
@@ -140,7 +142,6 @@ func DefaultConfig() Config {
 		},
 		Fingerprint: defaultFingerprintConfig(),
 		Target: TargetConfig{
-			BaseURLMarkers: []string{"opencode.ai"},
 			// Matched as a case-insensitive substring of the host's auth id.
 			// The host builds that id from the credential's display name
 			// ("Opencode Zen" -> "openai-compatible-opencode zen"), so a bare

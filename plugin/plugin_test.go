@@ -106,7 +106,7 @@ func TestUnknownMethodReturnsErrorEnvelope(t *testing.T) {
 // --- session resolution --------------------------------------------------
 
 func TestSessionFromCodexHeaderIsHashed(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:        "kimi-k2.7-code",
 		SourceFormat: "openai",
@@ -140,7 +140,7 @@ func TestSessionFromCodexHeaderIsHashed(t *testing.T) {
 // is a per-call value for most tools, so any recognized conversation header
 // must outrank it.
 func TestSessionSourcePrecedenceRankedLast(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:        "deepseek-v4-flash",
 		SourceFormat: "openai",
@@ -164,7 +164,7 @@ func TestSessionSourcePrecedenceRankedLast(t *testing.T) {
 // pi-ai affinity header is conversation-scoped, the generic X-Session-Id may
 // be stamped per call, so affinity must win when both are present.
 func TestSessionAffinityOutranksGenericSessionID(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:        "deepseek-v4-flash",
 		SourceFormat: "openai",
@@ -191,7 +191,7 @@ func TestSessionAffinityOutranksGenericSessionID(t *testing.T) {
 // session.fallback_to_request_id injects the request id so a session-requiring
 // upstream does not hard-fail when the body is unhashable.
 func TestNativeSessionIsNeverOverriddenOrHashed(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"X-Opencode-Session": {"native-session"}},
@@ -270,7 +270,7 @@ func TestFirstUserContentResponsesInput(t *testing.T) {
 // --- user agent ----------------------------------------------------------
 
 func TestUserAgentPassthroughForwardsClientUA(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model: "glm-5.3",
 		Headers: http.Header{
@@ -292,7 +292,7 @@ func TestUserAgentPassthroughForwardsClientUA(t *testing.T) {
 }
 
 func TestUserAgentPassthroughFallsBackForGenericUA(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"User-Agent": {"Go-http-client/2.0"}},
@@ -319,7 +319,7 @@ func TestUserAgentPassthroughFallsBackForGenericUA(t *testing.T) {
 }
 
 func TestUserAgentFallbackValueOverride(t *testing.T) {
-	m := newConfiguredManager(t, "user_agent:\n  fallback_value: my-agent/2.0\ntarget:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "user_agent:\n  fallback_value: my-agent/2.0\n")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"User-Agent": {"Go-http-client/2.0"}},
@@ -334,7 +334,7 @@ func TestUserAgentFallbackValueOverride(t *testing.T) {
 }
 
 func TestUserAgentNotRewrittenWhenDisabled(t *testing.T) {
-	m := newConfiguredManager(t, "user_agent:\n  rewrite: false\ntarget:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "user_agent:\n  rewrite: false\n")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"Session-Id": {"s"}},
@@ -422,7 +422,7 @@ func TestIsZenFreeTierModelExplicitFreeList(t *testing.T) {
 // --- targeting -----------------------------------------------------------
 
 func TestNonTargetRequestIsNoOp(t *testing.T) {
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n  auth_prefixes: [openai-compatibility:opencode:]\n")
+	m := newConfiguredManager(t, "target:\n  auth_prefixes: [openai-compatibility:opencode:]\n")
 	req := RequestInterceptRequest{
 		Model:    "claude-sonnet-4",
 		Headers:  http.Header{"Session-Id": {"s"}},
@@ -505,7 +505,7 @@ func TestMalformedPayloadReturnsTransportError(t *testing.T) {
 }
 
 func TestSessionHeaderNameIsCustomizable(t *testing.T) {
-	m := newConfiguredManager(t, "session:\n  header_name: X-OpenCode-Session\ntarget:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "session:\n  header_name: X-OpenCode-Session\n")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"Session-Id": {"s1"}},
@@ -526,7 +526,7 @@ func TestLoggingOffByDefault(t *testing.T) {
 	SetHostCaller(func(string, []byte) ([]byte, error) { calls++; return nil, nil })
 	defer SetHostCaller(nil)
 
-	m := newConfiguredManager(t, "target:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"Session-Id": {"s1"}},
@@ -551,7 +551,7 @@ func TestLoggingEnabledWhenConfigured(t *testing.T) {
 	})
 	defer SetHostCaller(nil)
 
-	m := newConfiguredManager(t, "logging:\n  enabled: true\ntarget:\n  base_url_markers: [opencode.ai]\n")
+	m := newConfiguredManager(t, "logging:\n  enabled: true\n")
 	req := RequestInterceptRequest{
 		Model:    "glm-5.3",
 		Headers:  http.Header{"Session-Id": {"s1"}},

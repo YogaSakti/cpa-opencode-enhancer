@@ -1,9 +1,8 @@
 # opencode-enhancer
 
 CLIProxyAPI native plugin that makes the **OpenCode free tier** usable through
-CLIProxyAPI, on the current inference host
-(`opencode.ai/inference/openai/v1`) and the legacy zen hosts
-(`opencode.ai/zen/v1`, `opencode.ai/zen/go/v1`).
+CLIProxyAPI, for chat models (`openai-compatibility` credentials) and for the
+Responses-only Muse models (`codex-api-key` credentials).
 
 OpenCode gates its free tier on the complete official-client fingerprint. A
 request missing any one part is rejected with:
@@ -13,23 +12,10 @@ request missing any one part is rejected with:
      "message":"OpenCode's free tier can only be used from within OpenCode"}}
 ```
 
-Paid models need none of this and are never reshaped. Legacy note: the old
-requirement that *every* request carry a stable `x-opencode-session` and an
-agent User-Agent turned out to hold only for the free tier — a paid model
-answers 200 to a bare `curl` with `stream:false` and no OpenCode headers. The
-one exception is `zen/go/v1`, which returns `400 MissingSessionID` without
+Paid models need none of this and are never reshaped: a paid model answers 200
+to a bare `curl` with `stream:false` and no OpenCode headers. The one exception
+is `zen/go/v1`, which returns `400 MissingSessionID` without
 `x-opencode-session`; the plugin supplies it.
-
-Historical context for the paid path:
-
-1. a **stable `x-opencode-session`** per conversation (sticky routing +
-   prompt-cache affinity),
-2. a **real agent User-Agent** (not a generic SDK /
-   proxy name like `cli-proxy-openai-compat`),
-3. **typical coding-agent traffic**.
-
-CLIProxyAPI's built-in executors drop or mangle these signals. This plugin
-restores them on every free-tier request routed to an OpenCode upstream.
 
 > [!IMPORTANT]
 > **Personal project — no affiliation, no warranty, takedown on request.**
@@ -79,31 +65,37 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see below). Applies to free-tier models only; paid builds are untouched. |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
-| Target detection | `request.intercept_after` | Matches the host's auth id against `target.auth_prefixes` as a case-insensitive substring (default `opencode`), plus provider base-URL markers and optional model globs. |
+| Target detection | `request.intercept_after` | Matches the host's auth id against `target.auth_prefixes` as a case-insensitive substring (default `opencode`), or the model against `target.models` globs. A `codex-api-key` credential needs a glob; see [Muse](#muse-responses-only). |
 
 ## Endpoints
 
-Verified live 2026-09-19. The current host splits catalog and inference across
-different prefixes, so no single `base-url` serves both.
+Catalog and inference live at different prefixes, so no single `base-url`
+serves both. CLIProxyAPI serves requests from the credential's own `models:`
+list and never needs the catalog.
 
-| URL | `/models` | `/chat/completions` |
+| URL | `/models` | Inference |
 | --- | --- | --- |
-| `https://opencode.ai/inference/openai/v1` | 404 | **200** — use this as `base-url` |
-| `https://opencode.ai/inference/v1` | **200** | 404 — catalog only |
-| `https://opencode.ai/zen/v1` | 200 | 200, separate free-tier quota bucket |
-| `https://opencode.ai/zen/go/v1` | 200 | 200, needs `x-opencode-session` |
+| `https://opencode.ai/zen/v1` | 200 | `/chat/completions` and `/responses`; the endpoints OpenCode's docs list. **Use this for Muse.** |
+| `https://opencode.ai/inference/openai/v1` | 404 | `/chat/completions` 200 (verified 2026-09-19); `/responses` untested |
+| `https://opencode.ai/inference/v1` | 200 | 404 — catalog only |
+| `https://opencode.ai/zen/go/v1` | 200 | Go subscription models; needs `x-opencode-session` |
 
-Point `base-url` at `/inference/openai/v1`: CLIProxyAPI serves requests from
-the credential's own `models:` list and never needs the catalog, so the 404
-there is harmless. Fetch the catalog by hand from `/inference/v1/models` when
-you want to see what exists.
+Keys look like `oc_sk_…`; the old `sk-…` keys were revoked. Do not put
+`/responses` in a `base-url`: the Codex executor appends it.
 
-Keys: the old `sk-…` keys were revoked. Current keys look like `oc_sk_…` and
-work on every host above.
+Free models and the endpoint each one answers on, measured live on 2026-09-26
+(check `https://opencode.ai/zen/v1/models` for the current list):
+
+| Endpoint | Models |
+| --- | --- |
+| `/chat/completions` | `big-pickle`, `space-bunny-free`, `mimo-v2.5-free`, `mimo-v2.6-flash-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` |
+| `/responses` | `muse-spark-1.3-contributor-free`, `muse-spark-1.2-contributor-free` (their `/chat/completions` answers 500) |
+| not usable through CPA | `jev-1.13-free` — served on `/zen/v1/systemone`, returns typed decisions rather than text |
+| retired | `deepseek-v4-flash-free` — `400 Model is unavailable` |
 
 ## Install
 
@@ -138,7 +130,7 @@ nothing to place by hand.
 ### 3. Enable it in `config.yaml`
 
 Everything is optional except `enabled`. The defaults are the verified
-free-tier values; this is a complete, working configuration:
+free-tier values; this is a complete, working configuration for chat models:
 
 ```yaml
 plugins:
@@ -152,20 +144,17 @@ plugins:
 Restart CLIProxyAPI and confirm:
 
 ```bash
-docker restart cli-proxy-api        # or restart the binary
-docker logs cli-proxy-api | grep opencode-enhancer
-# pluginhost: plugin registered plugin_id=opencode-enhancer ...
+journalctl -u cliproxyapi --no-pager -n 40 | grep opencode-enhancer
+# pluginhost: plugin loaded plugin_id=opencode-enhancer version=...
 ```
 
 ### 4. Add the credential glue (required)
 
 The plugin injects headers into the *execution headers*. Built-in executors
 only put headers on the wire that are declared in the credential's `headers:`
-map, so add `$` references on **every OpenCode credential**:
-
-`X-Opencode-Project` and `X-Opencode-Request` are part of the free-tier
-fingerprint, so they must be declared too — a header the credential does not
-declare never reaches the wire, and a fingerprint missing one part is a 403.
+map, so add `$` references on **every free-tier OpenCode credential**. A
+header the credential does not declare never reaches the wire, and a
+fingerprint missing one part is a 403.
 
 ```yaml
 openai-compatibility:
@@ -185,11 +174,7 @@ openai-compatibility:
     models:
       - name: "mimo-v2.5-free"
         alias: ""
-      - name: "ling-3.0-flash-fin-free"
-        alias: ""
       - name: "nemotron-3-ultra-free"
-        alias: ""
-      - name: "nemotron-3.5-lightning-free"
         alias: ""
 
   # PAID credential. No fingerprint is applied, so it needs no glue beyond the
@@ -203,37 +188,28 @@ openai-compatibility:
     models:
       - name: "glm-5.3"
         alias: ""
-      - name: "deepseek-v4-pro"
-        alias: ""
 ```
+
+`$Name` copies the value from the (plugin-augmented) execution headers; when
+absent the header is omitted.
 
 If you alias free models to drop the `-free` suffix, make sure the alias does
 not collide with a paid model of the same name on another credential — the
 tier that serves the request then depends on scheduling, and the billing
 differs. Give one side a distinct alias.
 
-Responses-only models (`muse-spark-*-free`, `jev-1.13-free`) answer
-`503 Endpoint is unavailable` on `/chat/completions`. Do not register them on
-an `openai-compatibility` credential.
+### Muse (Responses-only)
 
-> [!WARNING]
-> **Muse cannot be added safely to a normal mixed CLIProxyAPI instance.** Muse
-> needs a `codex-api-key` credential so it uses `/responses`, plus
-> `codex.disable-codex-cloaking: true` so this plugin's OpenCode fingerprint
-> reaches the wire. That cloaking switch is global to the whole Codex executor,
-> including Codex OAuth credentials; it is not scoped to the custom Muse key.
-> Use a dedicated CLIProxyAPI instance for Muse, or wait for CLIProxyAPI to
-> support per-credential cloaking control.
-
-A dedicated Muse instance can use:
+Muse answers only on `/responses`, so it cannot go on an
+`openai-compatibility` credential (that executor posts to
+`/chat/completions`). Use a `codex-api-key` credential, whose executor posts to
+`<base-url>/responses`, and target it by model in the plugin config:
 
 ```yaml
-codex:
-  disable-codex-cloaking: true
-
 codex-api-key:
-  - api-key: "${OPENCODE_GO_API_KEY}"
-    base-url: "https://opencode.ai/zen/go/v1"
+  - api-key: "${OPENCODE_API_KEY}"          # oc_sk_…
+    base-url: "https://opencode.ai/zen/v1"  # no /responses suffix
+    disable-codex-cloaking: true            # this credential only (CLIProxyAPI >= 7.3.17)
     headers:
       User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Client: "$X-Opencode-Client"
@@ -242,35 +218,38 @@ codex-api-key:
       X-Opencode-Request: "$X-Opencode-Request"
       Accept: "$Accept"
     models:
-      - name: "muse-spark-1.3-contributor"
+      - name: "muse-spark-1.3-contributor-free"
         alias: ""
+      - name: "muse-spark-1.2-contributor-free"
+        alias: ""
+
+plugins:
+  configs:
+    opencode-enhancer:
+      enabled: true
+      target:
+        models: ["muse-*"]
 ```
 
-The plugin automatically recognizes `muse-spark-*-contributor` on the
-`zen/go` route as free-tier and applies the complete fingerprint; no
-`free_tier.free_models` entry is needed. This exact isolated configuration was
-verified against CLIProxyAPI 7.3.11 with `response.completed`.
+- **`target.models` is required.** CLIProxyAPI passes interceptors no base
+  URL, and a `codex-api-key` auth id is `codex:apikey:<hash>`, so
+  `auth_prefixes` cannot match it. Without the glob the plugin skips the
+  request silently and upstream answers `403 FreeTierError`.
+- **`disable-codex-cloaking: true`.** With cloaking on, the Codex executor
+  replaces `User-Agent` with its own device profile after custom headers, and
+  the free tier rejects it. The per-credential switch arrived after
+  CLIProxyAPI 7.3.11; on older hosts only the global
+  `codex.disable-codex-cloaking` exists, which also affects Codex OAuth, so run
+  Muse in a dedicated instance there.
+- Clients may use any protocol (Chat Completions, Responses, Claude);
+  CLIProxyAPI translates to Responses.
 
-`$Name` copies the value from the (plugin-augmented) execution headers; when
-absent the header is omitted.
-
-## Breaking changes in 0.5.0
-
-Config keys removed or renamed. Nothing below had a demonstrated effect, and
-all of it is optional, so a config that sets none of it needs no migration.
-
-| Was | Now |
-| --- | --- |
-| `body_cleanup:` | `free_tier:` — it no longer cleans anything, it only classifies free vs paid |
-| `body_cleanup.free_markers` | `free_tier.markers` |
-| `body_cleanup.zen_free_models` / `zen_paid_models` | `free_tier.free_models` / `paid_models` |
-| `body_cleanup.strip_additional_tools` / `strip_types` | removed — it only fired on the codex path, which rejects every free-tier request anyway |
-| `user_agent.mode` / `value` / `template` / `custom_ua` / `generic_patterns` | removed — the fingerprint path ignores them, and the paid path is proven to need no UA shaping |
-| `session.fallback_to_request_id` | removed — a request id is not a conversation id; the fingerprint path has its own inline fallback |
-
-The `scheduler` capability is gone too: it marked auths by a `base_url` the
-host never puts in that metadata, and targeting works by auth-id substring.
-The log field `body_cleanup=` is now `body_shaped=`, which is what it reports.
+`muse-spark-*-contributor` (no `-free`) on `zen/go/v1` is a discounted paid
+model billed to a Go subscription. The plugin recognizes it automatically only
+on an `openai-compatibility` credential named "Opencode Go", which cannot
+serve Muse; on a `codex-api-key` credential, add it to
+`free_tier.free_models` if Go answers `FreeTierError`. That path is not
+re-verified in this revision.
 
 ## Configuration reference
 
@@ -330,9 +309,8 @@ plugins:
         paid_models: []                     # exact names never reshaped (guard)
 
       target:
-        base_url_markers: ["opencode.ai"]   # auto-match auths by provider URL
         auth_prefixes: ["opencode"]         # substring of the host's auth id
-        models: []                          # optional model globs (e.g. "muse-*")
+        models: []                          # model globs; codex-api-key needs one (e.g. "muse-*")
 
       logging:
         enabled: false                      # per-request host.log lines (default OFF)
@@ -365,11 +343,22 @@ sticky session.
 
 ## Verified behavior
 
-Measured on 2026-09-19 against a production CLIProxyAPI 7.3.8 (systemd) with a
-real `oc_sk_` credential, plugin v0.5.0. Muse's dedicated Responses path was
-separately verified on 2026-09-22 against CLIProxyAPI 7.3.11 for plugin v0.5.1.
+**Muse, 2026-09-26**, production CLIProxyAPI 7.3.17 (systemd), real `oc_sk_`
+credential, plugin v0.5.2, the [Muse](#muse-responses-only) configuration above:
 
-- `registered: true`, `effective_enabled: true` in `/v0/management/plugins`.
+- Chat Completions client → `muse-spark-1.2-contributor-free`: **200**, `OK`
+  (CLIProxyAPI translates to `/responses`).
+- Codex Responses payload with `additional_tools` in `input[0]`:
+  `response.completed`. The same payload sent straight upstream:
+  `400 input[0] did not match any supported type`.
+- Without `target.models`: `403 FreeTierError`, and no plugin log line —
+  the request was never targeted.
+- Straight upstream, Muse accepts top-level `function` and `namespace` tools
+  and rejects `custom` ones (`custom tools are not supported on this
+  endpoint`).
+
+**Chat models, 2026-09-19**, CLIProxyAPI 7.3.8, plugin v0.5.0:
+
 - Free tier, through CPA, `base-url` `…/inference/openai/v1`, streaming
   client: `mimo-v2.5-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`
   and `nemotron-3.5-lightning-free` all return **200** and assemble to `OK`.
@@ -385,10 +374,11 @@ separately verified on 2026-09-22 against CLIProxyAPI 7.3.11 for plugin v0.5.1.
   `X-Opencode-Session: ses_f56b02280823mByoHc9xwFUV68`,
   `X-Opencode-Request: msg_0b86c8beb001HxblIuY7sPnQyp`, body `"stream":true`
   with the `bash/glob/grep/read` tools appended.
-- Per-request observability via `host.log` (opt-in, `logging.enabled: true`,
-  off by default): each shaped request logs `session_source`, `session`,
-  `client_type`, `client_ua`, `outbound_ua`, `auth`, `fingerprint` and
-  `body_shaped`. The missing-glue warning is logged regardless of this flag.
+
+Per-request observability via `host.log` is opt-in (`logging.enabled: true`):
+each shaped request logs `session_source`, `session`, `client_type`,
+`client_ua`, `outbound_ua`, `auth`, `fingerprint` and `body_shaped`. The
+missing-glue warning is logged regardless of this flag.
 
 ### Live log example
 
@@ -438,20 +428,19 @@ auth_unavailable: no auth available (providers=openai-compatible-opencode zen, m
                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-CLIProxyAPI derives that id from the credential's display name. Observed forms
-on one live host: `openai-compatible-opencode zen` in error messages and
-`openai-compatibility:opencode zen:d4fc8bb50803` in the interceptor metadata. The
-default `auth_prefixes: ["opencode"]` matches it as a substring; add your own
-marker if you named the credential something without "opencode" in it.
+CLIProxyAPI derives an `openai-compatibility` auth id from the credential's
+display name (`openai-compatibility:opencode zen:d4fc8bb50803` in the
+interceptor metadata). The default `auth_prefixes: ["opencode"]` matches it as
+a substring; add your own marker if you named the credential something without
+"opencode" in it. A `codex-api-key` auth id (`codex:apikey:<hash>`) carries no
+name at all: target it with `target.models`.
 
 ## Known limitations
 
 - **Muse requires a Responses credential.** The plugin can shape a Muse
-  request but cannot change the executor selected by CLIProxyAPI. Configure
-  Muse under `codex-api-key`, not `openai-compatibility`. Because the required
-  `codex.disable-codex-cloaking` switch also affects Codex OAuth, the supported
-  deployment is a dedicated Muse instance until CLIProxyAPI offers a per-key
-  switch.
+  request but cannot change the executor CLIProxyAPI selects. Configure Muse
+  under `codex-api-key`, not `openai-compatibility`; see
+  [Muse](#muse-responses-only).
 - **Codex `additional_tools` is removed on the Muse free tier.** Codex sends
   `{"type":"additional_tools","tools":[…]}` in `input[]`, and the free tier
   rejects it with `400 input[0] did not match any supported type`. When the
@@ -474,10 +463,6 @@ marker if you named the credential something without "opencode" in it.
   and the `ses_`/`msg_` id shapes track a specific client release. When
   upstream changes its gates, update `fingerprint.user_agent` /
   `fingerprint.inject_tools` in config — no rebuild needed.
-- **Not verified against live upstream in this revision.** The gates above are
-  reproduced from the official client's behaviour and cross-checked against a
-  working independent implementation; the plugin's own coverage is unit tests,
-  not a live 200 from Zen.
 
 ## Why the credential glue cannot be dropped
 
@@ -506,30 +491,16 @@ Because a missing declaration is otherwise invisible — upstream just answers
 credential the first time it fingerprints a request. That line bypasses
 `logging.enabled`; silence it with `fingerprint.warn_missing_glue: false`.
 
-Two corrections to earlier notes in this README, both wrong:
-
-- `finalInterceptorHeaders` does **not** govern upstream request headers. It
-  is used in `handlers_stream.go` for the **response** headers a stream
-  interceptor returns downstream. `intercept_before` offers no way around the
-  glue, and this plugin's choice of `intercept_after` rests on the merge
-  semantics above, not on that function.
-- Plugin-supplied auth metadata is not a way in either: `AuthRefreshResponse`
-  can carry `headers` metadata, but that hook belongs to the plugin that owns
-  the credential's provider, and a built-in `openai-compatibility` API-key
-  credential has no refresh cycle to hook.
-
 ## Other host quirks
 
-- On CLIProxyAPI builds with codex cloaking enabled, the executor applies its
-  own device-profile `User-Agent` after custom headers. OpenCode rejects that
-  value for free-tier Muse. Disabling cloaking fixes Muse but currently applies
-  to every Codex credential, including OAuth; do it only on a dedicated Muse
-  instance.
-- Config-only alternative for the session header: `X-Opencode-Session:
-  "$CPA-SESSION-ID"` in the credential `headers:` map works without any
-  plugin when the client sends a recognizable session header, but lacks the
-  body-hash fallback, per-client UA mapping, and zen body cleanup. It does
-  not produce the `ses_`-shaped id the free tier requires.
+- Interceptor metadata carries only `selected_auth_id` and
+  `selected_auth_index` (a hash); the credential's base URL is never passed.
+  Target detection therefore works on auth ids and model names only.
+- CLIProxyAPI hot-reloads `config.yaml` through a watch on the file itself.
+  An edit that replaces the file (`sed -i`, editors that write a temp file and
+  rename it) drops the watch: later edits are ignored, with no log line, until
+  the service restarts. Edit the file in place, and confirm a
+  `config file changed, reloading` line after each change.
 
 ## Development
 

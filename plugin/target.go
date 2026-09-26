@@ -35,19 +35,9 @@ func isTarget(req RequestInterceptRequest, cfg Config) bool {
 		}
 	}
 
-	// Check base URL markers (from metadata or headers).
-	baseURL := metadataString(req.Metadata, "base_url")
-	if baseURL == "" {
-		// Fallback: check headers for base-url hint.
-		baseURL = req.Headers.Get("X-CPA-Base-URL")
-	}
-	baseURL = strings.ToLower(baseURL)
-	for _, marker := range cfg.Target.BaseURLMarkers {
-		if marker != "" && strings.Contains(baseURL, strings.ToLower(strings.TrimSpace(marker))) {
-			return true
-		}
-	}
-
+	// The host never passes the credential's base URL to interceptors, and a
+	// codex-api-key auth id ("codex:apikey:<hash>") carries no provider name,
+	// so such credentials are only reachable through target.models.
 	return false
 }
 
@@ -86,18 +76,15 @@ func isZenFreeTierModel(model string, cfg FreeTierConfig) bool {
 }
 
 // isZenGoMuseContributor reports whether the request targets Muse Contributor
-// on OpenCode Go. Go serves these builds from its free tier without a -free
-// suffix, so model-marker classification alone cannot recognize them.
+// on OpenCode Go. Go serves these builds without a -free suffix, so
+// model-marker classification alone cannot recognize them. Go is identified
+// by the auth id of a credential named "Opencode Go"; a codex-api-key
+// credential's id carries no name, so list the model in free_tier.free_models
+// there instead.
 func isZenGoMuseContributor(req RequestInterceptRequest, cfg FreeTierConfig) bool {
-	baseURL := strings.ToLower(metadataString(req.Metadata, "base_url"))
-	if baseURL == "" {
-		baseURL = strings.ToLower(req.Headers.Get("X-CPA-Base-URL"))
-	}
 	selectedAuth := strings.ToLower(metadataString(req.Metadata, "selected_auth_id"))
 	selectedIndex := strings.ToLower(metadataString(req.Metadata, "selected_auth_index"))
-	if !strings.Contains(baseURL, "/zen/go/") &&
-		!strings.Contains(selectedAuth, "opencode go") &&
-		!strings.Contains(selectedIndex, "opencode go") {
+	if !strings.Contains(selectedAuth, "opencode go") && !strings.Contains(selectedIndex, "opencode go") {
 		return false
 	}
 
