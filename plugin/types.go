@@ -24,6 +24,7 @@ type EnvelopeError struct {
 type RequestInterceptRequest struct {
 	RequestID      string         `json:"RequestID"`
 	SourceFormat   string         `json:"SourceFormat"`
+	ToFormat       string         `json:"ToFormat"` // upstream protocol, e.g. "codex"
 	Model          string         `json:"Model"`
 	RequestedModel string         `json:"RequestedModel"`
 	Headers        http.Header    `json:"Headers"`

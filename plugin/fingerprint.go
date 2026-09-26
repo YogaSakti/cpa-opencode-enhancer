@@ -51,6 +51,10 @@ type FingerprintConfig struct {
 	// A pooled free-tier key cannot decrypt encrypted_content written by a
 	// different upstream account, which returns HTTP 400.
 	StripReasoning *bool `yaml:"strip_reasoning"`
+	// StripAdditionalTools drops Codex "additional_tools" input items when the
+	// upstream speaks Responses. The free tier rejects that item type with
+	// HTTP 400 ("input[0] did not match any supported type").
+	StripAdditionalTools *bool `yaml:"strip_additional_tools"`
 	// WarnMissingGlue logs the credential headers: entries this plugin depends
 	// on, once per credential. On by default: without them every request is a
 	// silent 403.
@@ -65,6 +69,7 @@ const (
 	DefaultFingerprintEnabled  = true
 	DefaultFingerprintStream   = true
 	DefaultFingerprintStripRsn = true
+	DefaultFingerprintStripAdd = true
 	DefaultFingerprintFreeOnly = true
 	DefaultFingerprintWarnGlue = true
 )
@@ -74,19 +79,21 @@ func defaultFingerprintConfig() FingerprintConfig {
 	enabled := DefaultFingerprintEnabled
 	stream := DefaultFingerprintStream
 	stripReasoning := DefaultFingerprintStripRsn
+	stripAdditional := DefaultFingerprintStripAdd
 	freeOnly := DefaultFingerprintFreeOnly
 	warnGlue := DefaultFingerprintWarnGlue
 	return FingerprintConfig{
-		Enabled:         &enabled,
-		UserAgent:       DefaultFingerprintUA,
-		Client:          DefaultFingerprintClient,
-		Project:         DefaultFingerprintProject,
-		Accept:          DefaultFingerprintAccept,
-		ForceStream:     &stream,
-		InjectTools:     append([]string(nil), defaultFingerprintTools...),
-		StripReasoning:  &stripReasoning,
-		FreeOnly:        &freeOnly,
-		WarnMissingGlue: &warnGlue,
+		Enabled:              &enabled,
+		UserAgent:            DefaultFingerprintUA,
+		Client:               DefaultFingerprintClient,
+		Project:              DefaultFingerprintProject,
+		Accept:               DefaultFingerprintAccept,
+		ForceStream:          &stream,
+		InjectTools:          append([]string(nil), defaultFingerprintTools...),
+		StripReasoning:       &stripReasoning,
+		StripAdditionalTools: &stripAdditional,
+		FreeOnly:             &freeOnly,
+		WarnMissingGlue:      &warnGlue,
 	}
 }
 
@@ -255,9 +262,10 @@ func newRequestID() string {
 
 // applyFingerprintBody rewrites a request body so it passes the Zen free-tier
 // gates: streaming forced on, the official tool quartet declared, and (on the
-// Responses path) no stored state or undecryptable prior reasoning.
+// Responses path) no stored state, undecryptable prior reasoning, or
+// additional_tools items. toFormat is the host's selected upstream protocol.
 // Returns the rewritten body and whether anything changed.
-func applyFingerprintBody(body []byte, cfg FingerprintConfig) ([]byte, bool) {
+func applyFingerprintBody(body []byte, cfg FingerprintConfig, toFormat string) ([]byte, bool) {
 	if len(body) == 0 {
 		return body, false
 	}
@@ -288,6 +296,12 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig) ([]byte, bool) {
 		}
 		if BoolVal(cfg.StripReasoning, DefaultFingerprintStripRsn) {
 			if stripReasoningItems(root) {
+				changed = true
+			}
+		}
+		// Before ensureTools, so the quartet dedupes against promoted tools.
+		if isResponsesWire(toFormat) && BoolVal(cfg.StripAdditionalTools, DefaultFingerprintStripAdd) {
+			if stripAdditionalTools(root) {
 				changed = true
 			}
 		}
@@ -428,4 +442,69 @@ func stripReasoningItems(root map[string]any) bool {
 	}
 	root["input"] = keep
 	return true
+}
+
+// isResponsesWire reports whether the upstream receives the Responses body
+// as-is. Other targets are translated by the host, and its translators turn
+// additional_tools into native tool declarations, so they must keep it.
+func isResponsesWire(toFormat string) bool {
+	f := strings.TrimSpace(toFormat)
+	return strings.EqualFold(f, "codex") || strings.EqualFold(f, "openai-response")
+}
+
+// stripAdditionalTools drops Codex "additional_tools" input items, which the
+// free tier rejects with HTTP 400. Codex Desktop (Responses Lite) declares its
+// tools there, so plain function declarations are promoted to the top-level
+// tools array (an existing top-level entry of the same name wins). Custom and
+// namespace declarations have no verified top-level shape upstream and are
+// dropped, so Codex's exec sandbox and MCP namespaces are unavailable here.
+func stripAdditionalTools(root map[string]any) bool {
+	input, ok := root["input"].([]any)
+	if !ok {
+		return false
+	}
+	keep := make([]any, 0, len(input))
+	var promoted []any
+	for _, item := range input {
+		m, _ := item.(map[string]any)
+		if !isItemType(m, "additional_tools") {
+			keep = append(keep, item)
+			continue
+		}
+		nested, _ := m["tools"].([]any)
+		for _, tool := range nested {
+			if t, _ := tool.(map[string]any); isItemType(t, "function") && toolName(t) != "" {
+				promoted = append(promoted, t)
+			}
+		}
+	}
+	if len(keep) == len(input) {
+		return false
+	}
+	root["input"] = keep
+
+	existing, _ := root["tools"].([]any)
+	present := make(map[string]struct{}, len(existing))
+	for _, tool := range existing {
+		present[toolName(tool)] = struct{}{}
+	}
+	for _, tool := range promoted {
+		name := toolName(tool)
+		if _, ok := present[name]; ok {
+			continue
+		}
+		existing = append(existing, tool)
+		present[name] = struct{}{}
+	}
+	if len(existing) > 0 {
+		root["tools"] = existing
+	}
+	return true
+}
+
+// isItemType reports whether a JSON object's "type" is want (case-insensitive).
+// A nil map reports false.
+func isItemType(m map[string]any, want string) bool {
+	t, _ := m["type"].(string)
+	return strings.EqualFold(strings.TrimSpace(t), want)
 }

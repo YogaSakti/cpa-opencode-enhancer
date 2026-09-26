@@ -68,6 +68,7 @@ plugins:
         force_stream: true               # stream:false -> 403, even with valid headers
         inject_tools: ["bash", "glob", "grep", "read"]
         strip_reasoning: true            # Responses: drop prior reasoning/encrypted_content
+        strip_additional_tools: true     # Responses upstream: drop Codex additional_tools (400 otherwise)
         warn_missing_glue: true          # log the required credential headers: once per auth
         free_only: true                  # paid builds are never reshaped
 

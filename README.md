@@ -79,7 +79,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false` and drops prior-turn `reasoning` / `encrypted_content`. Applies to free-tier models only; paid builds are untouched. |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see below). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
@@ -320,6 +320,7 @@ plugins:
         force_stream: true                # stream:false is a 403 gate
         inject_tools: ["bash", "glob", "grep", "read"]
         strip_reasoning: true             # Responses: drop prior reasoning items
+        strip_additional_tools: true      # Responses upstream: drop Codex additional_tools items
         warn_missing_glue: true           # log required credential headers: once per auth
         free_only: true                   # paid builds are never reshaped
 
@@ -451,6 +452,19 @@ marker if you named the credential something without "opencode" in it.
   `codex.disable-codex-cloaking` switch also affects Codex OAuth, the supported
   deployment is a dedicated Muse instance until CLIProxyAPI offers a per-key
   switch.
+- **Codex `additional_tools` is removed on the Muse free tier.** Codex sends
+  `{"type":"additional_tools","tools":[…]}` in `input[]`, and the free tier
+  rejects it with `400 input[0] did not match any supported type`. When the
+  upstream protocol is Responses (`codex` / `openai-response`), the plugin
+  drops those items and promotes plain `function` declarations inside them
+  to the top-level `tools` (a top-level tool of the same name wins). `custom`
+  (Codex's `exec` sandbox) and `namespace` (MCP) declarations are dropped,
+  so those capabilities are unavailable there. Translated targets such as
+  Chat Completions keep the items, because CLIProxyAPI's translators convert
+  them into native tools. Set `fingerprint.strip_additional_tools: false` to
+  disable this. This covers what the separate `muse-tools-stripper` plugin
+  does, so you do not need both; if that plugin runs first, it discards the
+  function declarations before this one can promote them.
 - **`force_stream: true` breaks non-streaming clients.** The free tier rejects
   `stream: false` outright, so the plugin flips it; a client that asked for a
   non-streamed response then gets SSE the executor does not expect. Those
