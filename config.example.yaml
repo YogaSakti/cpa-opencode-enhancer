@@ -50,8 +50,6 @@ plugins:
       # --- Free vs paid classification (gates the whole fingerprint) ---
       free_tier:
         markers: ["-free", ":free"]
-        # muse-spark-*-contributor is auto-detected only on an
-        # openai-compatibility credential named "Opencode Go".
         free_models: []               # nama eksak lain yang dianggap free
         paid_models: []               # nama eksak yang tidak pernah di-reshape
 
@@ -89,12 +87,12 @@ plugins:
 # does not declare never reaches the wire, and a fingerprint missing one part
 # is a 403.
 #
-# Endpoints: catalog and inference live at different prefixes, so no single
-# base-url serves both; CLIProxyAPI serves from the credential's models: list.
-#   https://opencode.ai/zen/v1                /chat/completions + /responses (Muse)
-#   https://opencode.ai/inference/openai/v1   /chat/completions (catalog 404)
-#   https://opencode.ai/inference/v1          catalog only
-#   https://opencode.ai/zen/go/v1             Go subscription, needs x-opencode-session
+# Endpoints: /zen/v1/* is a proxy to /inference/openai/v1/* for oc_sk_ keys
+# (/zen/go/v1/* to /inference/go/openai/v1/*), so either prefix works as a
+# base-url. Never include /chat/completions or /responses; the executor adds it.
+#   https://opencode.ai/zen/v1  (= /inference/openai/v1)   chat + Responses (Muse)
+#   https://opencode.ai/zen/go/v1  (= /inference/go/openai/v1)   Go subscription
+#   https://opencode.ai/inference/v1/models   catalog only
 # Keys look like oc_sk_… ; old sk-… keys were revoked.
 #
 # openai-compatibility:

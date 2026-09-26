@@ -107,8 +107,7 @@ func fingerprintApplies(req RequestInterceptRequest, cfg Config) bool {
 		return true
 	}
 	return isZenFreeTierModel(req.Model, cfg.FreeTier) ||
-		isZenFreeTierModel(req.RequestedModel, cfg.FreeTier) ||
-		isZenGoMuseContributor(req, cfg.FreeTier)
+		isZenFreeTierModel(req.RequestedModel, cfg.FreeTier)
 }
 
 // fingerprintTools returns the configured tool quartet, or the default.

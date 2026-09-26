@@ -73,19 +73,49 @@ accepted this disclaimer.
 
 ## Endpoints
 
-Catalog and inference live at different prefixes, so no single `base-url`
-serves both. CLIProxyAPI serves requests from the credential's own `models:`
-list and never needs the catalog.
+Read from OpenCode's own gateway code ([anomalyco/opencode](https://github.com/anomalyco/opencode)
+`packages/console/app/src/routes/zen/` and `lib/inference-proxy.ts`, commit
+`696f41b`). The public `/zen` routes are a thin proxy: with an `oc_sk_…` key,
+every `/zen` request is forwarded to the inference host, which is where the
+free-tier gate (`FreeTierError`) lives.
 
-| URL | `/models` | Inference |
+| Public route | Forwarded to `https://opencode.ai/inference…` | Format |
 | --- | --- | --- |
-| `https://opencode.ai/zen/v1` | 200 | `/chat/completions` and `/responses`; the endpoints OpenCode's docs list. **Use this for Muse.** |
-| `https://opencode.ai/inference/openai/v1` | 404 | `/chat/completions` 200 (verified 2026-09-19); `/responses` untested |
-| `https://opencode.ai/inference/v1` | 200 | 404 — catalog only |
-| `https://opencode.ai/zen/go/v1` | 200 | Go subscription models; needs `x-opencode-session` |
+| `POST /zen/v1/chat/completions` | `/openai/v1/chat/completions` | OpenAI Chat |
+| `POST /zen/v1/responses` | `/openai/v1/responses` | OpenAI Responses |
+| `POST /zen/v1/messages` | `/anthropic/v1/messages` | Anthropic |
+| `POST /zen/v1/models/{model}:streamGenerateContent` | `/google/v1beta/models/{model}:…` | Gemini |
+| `POST /zen/v1/systemone` | `/systemone/v1/systemone` | Jev (typed decisions, not text) |
+| `GET /zen/v1/models` | `/v1/models` | catalog |
+| `POST /zen/go/v1/chat/completions`, `/responses` | `/go/openai/v1/…` | Go subscription |
+| `POST /zen/go/v1/messages` | `/go/anthropic/v1/messages` | Go subscription |
+| `POST /zen/go/v1/systemone` | `/go/systemone/v1/systemone` | Go subscription |
+| `GET /zen/go/v1/models`, `/usage` | `/go/v1/models`, `/go/v1/usage` | Go catalog, usage |
 
-Keys look like `oc_sk_…`; the old `sk-…` keys were revoked. Do not put
-`/responses` in a `base-url`: the Codex executor appends it.
+A CLIProxyAPI `base-url` can therefore be either the public prefix or its
+inference equivalent. Never include `/chat/completions` or `/responses`: the
+executor appends them.
+
+| Use | `base-url` |
+| --- | --- |
+| Chat models | `https://opencode.ai/zen/v1` or `https://opencode.ai/inference/openai/v1` (verified 2026-09-19) |
+| Muse | the same two (`zen/v1` verified 2026-09-26) |
+| Go subscription | `https://opencode.ai/zen/go/v1` or `https://opencode.ai/inference/go/openai/v1` |
+
+The catalog sits under a different prefix (`/inference/v1/models`), which is
+why `/inference/openai/v1/models` is a 404. That is harmless: CLIProxyAPI serves
+requests from the credential's own `models:` list.
+
+The official client reads its provider base URLs from
+`models.opencode.ai/api.json` (`opencode` → `zen/v1`, `opencode-go` →
+`zen/go/v1`) and picks the endpoint per model from its AI SDK package:
+`@ai-sdk/openai` → `/responses`, `@ai-sdk/openai-compatible` →
+`/chat/completions`, `@ai-sdk/anthropic` → `/messages`. It sends
+`x-opencode-project`, `x-opencode-session`, `x-opencode-request`,
+`x-opencode-client` and `User-Agent` on every OpenCode request, the same set
+this plugin supplies.
+
+Keys look like `oc_sk_…`; the old `sk-…` keys were revoked.
 
 Free models and the endpoint each one answers on, measured live on 2026-09-26
 (check `https://opencode.ai/zen/v1/models` for the current list):
@@ -208,7 +238,7 @@ Muse answers only on `/responses`, so it cannot go on an
 ```yaml
 codex-api-key:
   - api-key: "${OPENCODE_API_KEY}"          # oc_sk_…
-    base-url: "https://opencode.ai/zen/v1"  # no /responses suffix
+    base-url: "https://opencode.ai/zen/v1"  # or …/inference/openai/v1; no /responses suffix
     disable-codex-cloaking: true            # this credential only (CLIProxyAPI >= 7.3.17)
     headers:
       User-Agent: "$X-Opencode-User-Agent"
@@ -244,12 +274,13 @@ plugins:
 - Clients may use any protocol (Chat Completions, Responses, Claude);
   CLIProxyAPI translates to Responses.
 
-`muse-spark-*-contributor` (no `-free`) on `zen/go/v1` is a discounted paid
-model billed to a Go subscription. The plugin recognizes it automatically only
-on an `openai-compatibility` credential named "Opencode Go", which cannot
-serve Muse; on a `codex-api-key` credential, add it to
-`free_tier.free_models` if Go answers `FreeTierError`. That path is not
-re-verified in this revision.
+`muse-spark-*-contributor` (no `-free`) on Go is a subscription model, not free
+tier. OpenCode's gateway requires Go training consent on the workspace for it
+(`DataPolicyError` otherwise). The plugin does not fingerprint it: earlier
+versions tried, but could only recognize an `openai-compatibility` credential,
+which cannot serve Muse, and a 2026-09-22 run through a `codex-api-key`
+credential on `zen/go/v1` completed without the fingerprint. If Go ever
+answers `FreeTierError`, opt the model in with `free_tier.free_models`.
 
 ## Configuration reference
 

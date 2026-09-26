@@ -262,19 +262,20 @@ func TestFingerprintAppliesOnlyToFreeModels(t *testing.T) {
 	}
 }
 
-func TestFingerprintAppliesToMuseContributorOnOpenCodeGo(t *testing.T) {
+// TestFingerprintSkipsGoMuseContributor: Go's muse-spark-*-contributor is a
+// subscription model, not free tier. It is fingerprinted only on opt-in.
+func TestFingerprintSkipsGoMuseContributor(t *testing.T) {
 	cfg := DefaultConfig()
 	req := RequestInterceptRequest{
 		Model:    "muse-spark-1.3-contributor",
 		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode go:1"},
 	}
-	if !fingerprintApplies(req, cfg) {
-		t.Fatal("OpenCode Go Muse Contributor must get the free-tier fingerprint automatically")
-	}
-
-	cfg.FreeTier.PaidModels = []string{"muse-spark-1.3-contributor"}
 	if fingerprintApplies(req, cfg) {
-		t.Fatal("paid_models override must disable the automatic Go Muse fingerprint")
+		t.Fatal("Go Muse Contributor must not be fingerprinted by default")
+	}
+	cfg.FreeTier.FreeModels = []string{"muse-spark-1.3-contributor"}
+	if !fingerprintApplies(req, cfg) {
+		t.Fatal("free_tier.free_models must opt the model in")
 	}
 }
 
@@ -376,17 +377,20 @@ func TestInterceptAfterPaidMuseModelUntouched(t *testing.T) {
 	}
 }
 
-func TestInterceptAfterGoMuseContributorFingerprint(t *testing.T) {
-	m := NewManager()
+// TestInterceptAfterGoMuseContributorSessionOnly: a targeted Go Muse request
+// gets the session header zen/go requires, but no free-tier fingerprint.
+func TestInterceptAfterGoMuseContributorSessionOnly(t *testing.T) {
+	m := newConfiguredManager(t, "target:\n  models: [\"muse-*\"]\n")
 	req := RequestInterceptRequest{
 		RequestID: "req-go-muse",
+		ToFormat:  "codex",
 		Model:     "muse-spark-1.3-contributor",
 		Headers: http.Header{
 			"User-Agent": []string{"codex-tui/0.153.3"},
 			"Session-Id": []string{"conv-abc"},
 		},
 		Body:     []byte(`{"model":"muse-spark-1.3-contributor","stream":false,"input":"hi"}`),
-		Metadata: map[string]any{"selected_auth_id": "openai-compatibility:opencode go:1"},
+		Metadata: map[string]any{"selected_auth_id": "codex:apikey:0123456789ab"},
 	}
 	payload, _ := json.Marshal(req)
 	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
@@ -401,21 +405,14 @@ func TestInterceptAfterGoMuseContributorFingerprint(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if got := resp.Headers.Get("User-Agent"); got != DefaultFingerprintUA {
-		t.Fatalf("User-Agent = %q, want %q", got, DefaultFingerprintUA)
+	if resp.Headers.Get("x-opencode-session") == "" {
+		t.Fatal("zen/go requires x-opencode-session; a targeted request must carry it")
 	}
-	if got := resp.Headers.Get("x-opencode-session"); !isOpenCodeSessionID(got) {
-		t.Fatalf("x-opencode-session = %q, want the ses_ shape", got)
+	if got := resp.Headers.Get("X-Opencode-Project"); got != "" {
+		t.Fatalf("Go Muse got fingerprint header X-Opencode-Project=%q", got)
 	}
-	var body map[string]any
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal shaped body: %v", err)
-	}
-	if body["stream"] != true {
-		t.Fatalf("stream = %v, want true", body["stream"])
-	}
-	if len(body["tools"].([]any)) != len(defaultFingerprintTools) {
-		t.Fatalf("tools = %v, want the quartet", body["tools"])
+	if len(resp.Body) != 0 {
+		t.Fatalf("Go Muse body was reshaped: %s", resp.Body)
 	}
 }
 
