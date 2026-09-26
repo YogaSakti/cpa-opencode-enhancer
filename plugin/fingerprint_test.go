@@ -46,7 +46,7 @@ func TestIsOpenCodeSessionIDRejectsRawHash(t *testing.T) {
 
 func TestApplyFingerprintBodyChatPath(t *testing.T) {
 	in := []byte(`{"model":"mimo-v2.5-free","stream":false,"tools":[{"type":"function","function":{"name":"bash"}}]}`)
-	out, changed := applyFingerprintBody(in, defaultFingerprintConfig())
+	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "")
 	if !changed {
 		t.Fatal("expected the chat body to be rewritten")
 	}
@@ -75,7 +75,7 @@ func TestApplyFingerprintBodyResponsesPath(t *testing.T) {
 	in := []byte(`{"model":"muse-spark-1.3-contributor-free","max_tokens":4096,"input":[` +
 		`{"type":"reasoning","encrypted_content":"xx"},` +
 		`{"type":"message","role":"user","encrypted_content":"yy","content":"hi"}]}`)
-	out, changed := applyFingerprintBody(in, defaultFingerprintConfig())
+	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "")
 	if !changed {
 		t.Fatal("expected the responses body to be rewritten")
 	}
@@ -110,12 +110,135 @@ func TestApplyFingerprintBodyResponsesPath(t *testing.T) {
 
 func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 	cfg := defaultFingerprintConfig()
-	first, changed := applyFingerprintBody([]byte(`{"model":"mimo-v2.5-free"}`), cfg)
+	first, changed := applyFingerprintBody([]byte(`{"model":"mimo-v2.5-free"}`), cfg, "")
 	if !changed {
 		t.Fatal("first pass should rewrite")
 	}
-	if _, changed := applyFingerprintBody(first, cfg); changed {
+	if _, changed := applyFingerprintBody(first, cfg, ""); changed {
 		t.Fatal("second pass rewrote an already-shaped body")
+	}
+}
+
+// codexLiteBody mirrors a Codex Desktop (Responses Lite) request: tool
+// declarations arrive as an input[0] additional_tools item.
+const codexLiteBody = `{"model":"muse-spark-1.3-contributor-free","stream":true,"store":false,` +
+	`"tools":[{"type":"function","name":"shell","description":"top-level"}],"input":[` +
+	`{"type":"additional_tools","role":"developer","tools":[` +
+	`{"type":"custom","name":"exec"},` +
+	`{"type":"namespace","name":"mcp__exa","tools":[{"type":"function","name":"search"}]},` +
+	`{"type":"function","name":"shell","description":"nested"},` +
+	`{"type":"function","name":"view_image","parameters":{"type":"object"}},` +
+	`"not-an-object"]},` +
+	`{"type":"message","role":"user","content":"hi"},` +
+	`{"type":"function_call_output","call_id":"c1","output":"ok"}]}`
+
+func TestApplyFingerprintBodyStripsAdditionalToolsOnResponsesWire(t *testing.T) {
+	cfg := defaultFingerprintConfig()
+	out, changed := applyFingerprintBody([]byte(codexLiteBody), cfg, "codex")
+	if !changed {
+		t.Fatal("expected additional_tools to be stripped for a codex upstream")
+	}
+	var root map[string]any
+	if err := json.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal rewritten body: %v", err)
+	}
+	input, _ := root["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("input = %v, want only the message and function_call_output", input)
+	}
+	for i, want := range []string{"message", "function_call_output"} {
+		if got := input[i].(map[string]any)["type"]; got != want {
+			t.Fatalf("input[%d].type = %v, want %q (order must be preserved)", i, got, want)
+		}
+	}
+
+	names := toolNames(t, root)
+	for _, want := range append([]string{"shell", "view_image"}, defaultFingerprintTools...) {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("tool %q missing from %v", want, names)
+		}
+	}
+	for _, gone := range []string{"exec", "mcp__exa", "search"} {
+		if _, ok := names[gone]; ok {
+			t.Fatalf("tool %q has no verified top-level shape and must not be promoted", gone)
+		}
+	}
+	for _, tool := range root["tools"].([]any) {
+		m := tool.(map[string]any)
+		if m["name"] == "shell" && m["description"] != "top-level" {
+			t.Fatalf("shell = %v, want the top-level declaration to win", m)
+		}
+	}
+	if len(root["tools"].([]any)) != len(names) {
+		t.Fatalf("tools contain duplicate names: %v", root["tools"])
+	}
+
+	if _, changed := applyFingerprintBody(out, cfg, "codex"); changed {
+		t.Fatal("second pass rewrote an already-stripped body")
+	}
+}
+
+func TestApplyFingerprintBodyKeepsAdditionalToolsForTranslatedTargets(t *testing.T) {
+	disabled, err := LoadConfig([]byte("fingerprint:\n  strip_additional_tools: false\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cases := []struct {
+		name     string
+		cfg      FingerprintConfig
+		toFormat string
+	}{
+		// The host's translators convert additional_tools into native tools.
+		{"chat target", defaultFingerprintConfig(), "openai"},
+		{"claude target", defaultFingerprintConfig(), "claude"},
+		{"unknown target", defaultFingerprintConfig(), ""},
+		{"disabled", disabled.Fingerprint, "codex"},
+	}
+	for _, tc := range cases {
+		out, _ := applyFingerprintBody([]byte(codexLiteBody), tc.cfg, tc.toFormat)
+		var root map[string]any
+		if err := json.Unmarshal(out, &root); err != nil {
+			t.Fatalf("%s: unmarshal body: %v", tc.name, err)
+		}
+		input, _ := root["input"].([]any)
+		if len(input) != 3 || input[0].(map[string]any)["type"] != "additional_tools" {
+			t.Fatalf("%s: input = %v, want additional_tools kept", tc.name, input)
+		}
+	}
+}
+
+func TestInterceptAfterStripsAdditionalToolsForMuseFree(t *testing.T) {
+	m := NewManager()
+	req := RequestInterceptRequest{
+		RequestID:      "req-muse-lite",
+		SourceFormat:   "openai-response",
+		ToFormat:       "codex",
+		Model:          "muse-spark-1.3-contributor-free",
+		RequestedModel: "muse-free(high)",
+		Headers:        http.Header{"Session-Id": []string{"conv-abc"}},
+		Body:           []byte(codexLiteBody),
+		Metadata:       map[string]any{"base_url": "https://opencode.ai/zen/v1"},
+	}
+	payload, _ := json.Marshal(req)
+	raw, err := m.HandleCall(MethodRequestInterceptAfter, payload)
+	if err != nil {
+		t.Fatalf("HandleCall: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var resp RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal shaped body: %v", err)
+	}
+	input, _ := body["input"].([]any)
+	if len(input) == 0 || input[0].(map[string]any)["type"] != "message" {
+		t.Fatalf("input = %v, want additional_tools gone from input[0]", input)
 	}
 }
 

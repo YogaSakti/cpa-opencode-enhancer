@@ -190,7 +190,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	// 3. Body shaping: stream, tool quartet, Responses hygiene.
 	bodyChanged := false
 	if fingerprint {
-		if fixed, changed := applyFingerprintBody(req.Body, cfg.Fingerprint); changed {
+		if fixed, changed := applyFingerprintBody(req.Body, cfg.Fingerprint, req.ToFormat); changed {
 			resp.Body = fixed
 			bodyChanged = true
 		}
