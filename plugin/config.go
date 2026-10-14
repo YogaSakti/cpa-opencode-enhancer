@@ -15,7 +15,7 @@ const ABIVersion uint32 = 1
 // Plugin identity constants.
 const (
 	PluginID      = "opencode-enhancer"
-	PluginVersion = "0.5.4"
+	PluginVersion = "0.5.5"
 	GitHubRepo    = "https://github.com/YogaSakti/cpa-opencode-enhancer"
 )
 

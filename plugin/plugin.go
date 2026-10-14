@@ -30,6 +30,8 @@ type Manager struct {
 	// warnedAuths tracks credentials already warned about the required
 	// header glue. Bounded by the number of credentials; reset on reconfigure.
 	warnedAuths map[string]struct{}
+	// shortcut: session IDs remain cached for the plugin lifetime; add expiry if session churn grows large.
+	sessionIDs map[[32]byte]string
 }
 
 // NewManager returns a dispatcher with default configuration.
@@ -37,6 +39,7 @@ func NewManager() *Manager {
 	return &Manager{
 		cfg:         DefaultConfig(),
 		warnedAuths: make(map[string]struct{}),
+		sessionIDs:  make(map[[32]byte]string),
 	}
 }
 
@@ -56,6 +59,7 @@ func (m *Manager) HandleCall(method string, payload []byte) ([]byte, error) {
 		m.mu.Lock()
 		m.cfg = DefaultConfig()
 		m.warnedAuths = make(map[string]struct{})
+		m.sessionIDs = make(map[[32]byte]string)
 		m.mu.Unlock()
 		SetLogEnabled(false)
 		return OKEnvelope(struct{}{}), nil
@@ -110,9 +114,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	resp := RequestInterceptResponse{Headers: http.Header{}}
 	logValues := map[string]string{}
 
-	// The Zen free tier gates on the *whole* official-client fingerprint:
-	// UA, client/project/session/request headers, streaming, and the tool
-	// quartet. Missing any one of them returns 403 FreeTierError.
+	// Use the tested OpenCode client fingerprint for Zen free-tier requests.
 	fingerprint := fingerprintApplies(req, cfg)
 	logValues["fingerprint"] = strconv.FormatBool(fingerprint)
 	if fingerprint {
@@ -137,7 +139,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		case fingerprint:
 			value := res.Value
 			if !isOpenCodeSessionID(value) {
-				value = shapeSessionID(value)
+				value = m.shapeSessionID(value)
 			}
 			resp.Headers.Set(cfg.Session.HeaderName, value)
 			logValues["session"] = value
@@ -150,8 +152,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		}
 	}
 
-	// 2. Client identity + user-agent. On the fingerprint path both are fixed
-	// to the official client's values; the client's own UA would fail the gate.
+	// 2. Client identity + user-agent. Use the tested OpenCode 2 CLI values.
 	clientType := detectClientType(req.Headers)
 	clientUA := headerGet(req.Headers, "User-Agent")
 	logValues["client_type"] = clientType
@@ -215,7 +216,7 @@ func registration() Registration {
 			GitHubRepository: GitHubRepo,
 			ConfigFields: []ConfigField{
 				{Name: "fingerprint.enabled", Type: "boolean", Description: "Send the official OpenCode client fingerprint required by the zen free tier."},
-				{Name: "fingerprint.user_agent", Type: "string", Description: "User-Agent used on the fingerprint path (must be opencode/>=1.17)."},
+				{Name: "fingerprint.user_agent", Type: "string", Description: "User-Agent used on the fingerprint path."},
 				{Name: "fingerprint.force_stream", Type: "boolean", Description: "Force stream:true; the zen free tier rejects non-streaming requests."},
 				{Name: "fingerprint.free_only", Type: "boolean", Description: "Restrict the fingerprint to free-tier models; paid builds are untouched."},
 				{Name: "fingerprint.warn_missing_glue", Type: "boolean", Description: "Log the credential headers: entries the fingerprint depends on, once per auth."},

@@ -4,8 +4,8 @@ CLIProxyAPI native plugin that makes the **OpenCode free tier** usable through
 CLIProxyAPI, for chat models (`openai-compatibility` credentials) and for the
 Responses-only Muse models (`codex-api-key` credentials).
 
-OpenCode gates its free tier on the complete official-client fingerprint. A
-request missing any one part is rejected with:
+OpenCode checks the client request before serving free-tier models. In a live
+test, an invalid session ID returned:
 
 ```
 403 {"type":"error","error":{"type":"FreeTierError",
@@ -65,8 +65,8 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the complete official-client fingerprint the Zen free tier gates on: `User-Agent: opencode/1.18.31`, `X-Opencode-Client: desktop`, `X-Opencode-Project: global`, a `ses_…`-shaped session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/glob/grep/read` tool quartet, declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry it upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
-| Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values are SHA-256 hashed before leaving the proxy; a native OpenCode session is never overridden. |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the tested OpenCode 2 CLI fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, a timestamped `ses_…` session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `shell/glob/grep/read` tools, declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
+| Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values use a first-seen timestamp and hashed conversation identity; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
 | Target detection | `request.intercept_after` | Matches the host's auth id against `target.auth_prefixes` as a case-insensitive substring (default `opencode`), or the model against `target.models` globs. A `codex-api-key` credential needs a glob; see [Muse](#muse-responses-only). |
@@ -110,10 +110,10 @@ The official client reads its provider base URLs from
 `models.opencode.ai/api.json` (`opencode` → `zen/v1`, `opencode-go` →
 `zen/go/v1`) and picks the endpoint per model from its AI SDK package:
 `@ai-sdk/openai` → `/responses`, `@ai-sdk/openai-compatible` →
-`/chat/completions`, `@ai-sdk/anthropic` → `/messages`. It sends
-`x-opencode-project`, `x-opencode-session`, `x-opencode-request`,
-`x-opencode-client` and `User-Agent` on every OpenCode request, the same set
-this plugin supplies.
+`/chat/completions`, `@ai-sdk/anthropic` → `/messages`. In a captured OpenCode
+2.0.28 CLI request it sent `x-opencode-project`, `x-opencode-session`,
+`x-opencode-client` and `User-Agent`; the plugin supplies these headers and a
+per-request `x-opencode-request` ID.
 
 Keys look like `oc_sk_…`; the old `sk-…` keys were revoked.
 
@@ -323,12 +323,12 @@ plugins:
 
       fingerprint:
         enabled: true                     # send the official client fingerprint
-        user_agent: "opencode/1.18.31"    # must be opencode/>=1.17
-        client: "desktop"                 # X-Opencode-Client
+        user_agent: "opencode/latest/2.0.28/cli"
+        client: "cli"                     # X-Opencode-Client
         project: "global"                 # X-Opencode-Project
         accept: "text/event-stream"       # "" to leave Accept alone
         force_stream: true                # stream:false is a 403 gate
-        inject_tools: ["bash", "glob", "grep", "read"]
+        inject_tools: ["shell", "glob", "grep", "read"]
         strip_reasoning: true             # Responses: drop prior reasoning items
         strip_additional_tools: true      # Responses upstream: drop Codex additional_tools items
         warn_missing_glue: true           # log required credential headers: once per auth
@@ -497,10 +497,9 @@ name at all: target it with `target.models`.
   non-streaming Claude or Gemini client therefore still gets `403
   FreeTierError`. Claude Code always streams; Gemini clients must use
   `:streamGenerateContent`.
-- **The fingerprint is a moving target.** `opencode/1.18.31`, the tool quartet,
-  and the `ses_`/`msg_` id shapes track a specific client release. When
-  upstream changes its gates, update `fingerprint.user_agent` /
-  `fingerprint.inject_tools` in config — no rebuild needed.
+- **The fingerprint is a moving target.** The default UA, tools, and session
+  ID format track OpenCode 2.0.28. UA and tools can be overridden in config;
+  an ID-format change needs a plugin update.
 
 ## Why the credential glue cannot be dropped
 

@@ -3,7 +3,6 @@ package plugin
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,16 +11,13 @@ import (
 	"time"
 )
 
-// OpenCode Zen free-tier client fingerprint. The upstream gates the free tier
-// on the *whole* set below; a request missing any one of them is rejected with
-// HTTP 403 FreeTierError. Values match the official client (opencode 1.18.x).
+// OpenCode Zen free-tier client fingerprint, based on a tested OpenCode 2 CLI
+// request. A valid timestamped session ID is required to avoid FreeTierError.
 const (
-	// DefaultFingerprintUA must be >= 1.17; older versions are rejected.
-	DefaultFingerprintUA      = "opencode/1.18.31"
-	DefaultFingerprintClient  = "desktop"
+	DefaultFingerprintUA      = "opencode/latest/2.0.28/cli"
+	DefaultFingerprintClient  = "cli"
 	DefaultFingerprintProject = "global"
-	// DefaultFingerprintAccept matches the official client, which always
-	// streams. Paired with ForceStream.
+	// DefaultFingerprintAccept requests the SSE response forced by ForceStream.
 	DefaultFingerprintAccept = "text/event-stream"
 
 	HeaderOpenCodeProject = "X-Opencode-Project"
@@ -34,9 +30,8 @@ const (
 // base62Alphabet matches the official client's id alphabet.
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// defaultFingerprintTools is the tool quartet the official client always
-// declares. Zen uses its presence as part of the free-tier fingerprint.
-var defaultFingerprintTools = []string{"bash", "glob", "grep", "read"}
+// defaultFingerprintTools is the smallest OpenCode 2 tool set verified with Zen.
+var defaultFingerprintTools = []string{"shell", "glob", "grep", "read"}
 
 // FingerprintConfig controls the OpenCode free-tier client fingerprint.
 type FingerprintConfig struct {
@@ -110,7 +105,7 @@ func fingerprintApplies(req RequestInterceptRequest, cfg Config) bool {
 		isZenFreeTierModel(req.RequestedModel, cfg.FreeTier)
 }
 
-// fingerprintTools returns the configured tool quartet, or the default.
+// fingerprintTools returns the configured tools, or the default.
 func fingerprintTools(cfg FingerprintConfig) []string {
 	out := make([]string, 0, len(cfg.InjectTools))
 	for _, name := range cfg.InjectTools {
@@ -228,18 +223,19 @@ func timeHexFrom(value uint64) string {
 	return sb.String()
 }
 
-// shapeSessionID turns any stable conversation identity into an id with the
-// official `ses_<12 hex><14 base62>` shape. It is deterministic: the same
-// conversation always yields the same upstream session, which preserves
-// sticky routing and prompt-cache affinity.
-//
-// ponytail: the hex half is hash material, not the client's inverted
-// timestamp. Zen validates the shape, not the ordering. If upstream ever
-// starts decoding that timestamp, derive it from the conversation's
-// first-seen time instead.
-func shapeSessionID(identity string) string {
+// shapeSessionID uses OpenCode's descending first-seen timestamp and keeps
+// that ID stable for subsequent requests in the same conversation.
+func (m *Manager) shapeSessionID(identity string) string {
 	digest := sha256.Sum256([]byte(sessionIDPrefix + identity))
-	return sessionIDPrefix + hex.EncodeToString(digest[:6]) + base62From(digest[6:20])
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id := m.sessionIDs[digest]; id != "" {
+		return id
+	}
+	current := uint64(time.Now().UnixMilli())*0x1000 + 1
+	id := sessionIDPrefix + timeHexFrom(^current) + base62From(digest[:14])
+	m.sessionIDs[digest] = id
+	return id
 }
 
 // newRequestID returns a fresh per-request id with the official

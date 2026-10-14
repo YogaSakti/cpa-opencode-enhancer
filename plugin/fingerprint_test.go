@@ -4,22 +4,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestShapeSessionIDMatchesOfficialShape(t *testing.T) {
+	m := NewManager()
 	for _, identity := range []string{"", "conv-1", "0123456789abcdef", "ses_not_valid"} {
-		got := shapeSessionID(identity)
+		got := m.shapeSessionID(identity)
 		if !isOpenCodeSessionID(got) {
 			t.Fatalf("shapeSessionID(%q) = %q, does not match ses_ shape", identity, got)
 		}
 	}
 	// Deterministic: same conversation must keep the same upstream session,
 	// or sticky routing and prompt-cache affinity are lost.
-	if shapeSessionID("conv-1") != shapeSessionID("conv-1") {
+	if m.shapeSessionID("conv-1") != m.shapeSessionID("conv-1") {
 		t.Fatal("shapeSessionID is not deterministic")
 	}
-	if shapeSessionID("conv-1") == shapeSessionID("conv-2") {
+	if m.shapeSessionID("conv-1") == m.shapeSessionID("conv-2") {
 		t.Fatal("distinct conversations collided")
 	}
 }
@@ -45,7 +48,7 @@ func TestIsOpenCodeSessionIDRejectsRawHash(t *testing.T) {
 }
 
 func TestApplyFingerprintBodyChatPath(t *testing.T) {
-	in := []byte(`{"model":"mimo-v2.5-free","stream":false,"tools":[{"type":"function","function":{"name":"bash"}}]}`)
+	in := []byte(`{"model":"mimo-v2.5-free","stream":false,"tools":[{"type":"function","function":{"name":"shell"}}]}`)
 	out, changed := applyFingerprintBody(in, defaultFingerprintConfig(), "", "")
 	if !changed {
 		t.Fatal("expected the chat body to be rewritten")
@@ -64,7 +67,7 @@ func TestApplyFingerprintBodyChatPath(t *testing.T) {
 		}
 	}
 	if len(names) != len(defaultFingerprintTools) {
-		t.Fatalf("client's own bash tool was duplicated: %v", names)
+		t.Fatalf("client's own shell tool was duplicated: %v", names)
 	}
 	if _, ok := root["store"]; ok {
 		t.Fatal("store must not be set on the chat path")
@@ -139,8 +142,8 @@ func TestApplyFingerprintBodyClaudePath(t *testing.T) {
 		t.Fatalf("stream = %v, want true", root["stream"])
 	}
 	tools := root["tools"].([]any)
-	if len(tools) != len(defaultFingerprintTools) {
-		t.Fatalf("tools = %v, want the quartet with the client's bash kept once", tools)
+	if len(tools) != len(defaultFingerprintTools)+1 {
+		t.Fatalf("tools = %v, want the quartet plus the client's bash", tools)
 	}
 	for _, tool := range tools {
 		m := tool.(map[string]any)
@@ -426,11 +429,11 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if got := resp.Headers.Get("User-Agent"); got != DefaultFingerprintUA {
-		t.Fatalf("User-Agent = %q, want %q (client UA fails the gate)", got, DefaultFingerprintUA)
+	if got := resp.Headers.Get("User-Agent"); got != "opencode/latest/2.0.28/cli" {
+		t.Fatalf("User-Agent = %q, want OpenCode 2 CLI UA", got)
 	}
-	if got := resp.Headers.Get("X-Opencode-Client"); got != DefaultFingerprintClient {
-		t.Fatalf("X-Opencode-Client = %q, want %q", got, DefaultFingerprintClient)
+	if got := resp.Headers.Get("X-Opencode-Client"); got != "cli" {
+		t.Fatalf("X-Opencode-Client = %q, want cli", got)
 	}
 	if got := resp.Headers.Get("X-Opencode-Project"); got != DefaultFingerprintProject {
 		t.Fatalf("X-Opencode-Project = %q, want %q", got, DefaultFingerprintProject)
@@ -440,6 +443,16 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	}
 	if got := resp.Headers.Get("x-opencode-session"); !isOpenCodeSessionID(got) {
 		t.Fatalf("x-opencode-session = %q, want the ses_ shape", got)
+	} else {
+		encoded, err := strconv.ParseUint(got[4:16], 16, 64)
+		if err != nil {
+			t.Fatalf("decode session timestamp: %v", err)
+		}
+		millis := (^encoded >> 12) & ((1 << 36) - 1)
+		age := (uint64(time.Now().UnixMilli()) - millis) & ((1 << 36) - 1)
+		if age > 60_000 {
+			t.Fatalf("x-opencode-session = %q has a stale timestamp (%d ms old)", got, age)
+		}
 	}
 	var body map[string]any
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
@@ -450,6 +463,9 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	}
 	if len(body["tools"].([]any)) != len(defaultFingerprintTools) {
 		t.Fatalf("tools = %v, want the quartet", body["tools"])
+	}
+	if _, ok := toolNames(t, body)["shell"]; !ok {
+		t.Fatal("OpenCode 2 shell tool missing from fingerprint")
 	}
 }
 

@@ -54,18 +54,18 @@ plugins:
         paid_models: []               # nama eksak yang tidak pernah di-reshape
 
       # --- OpenCode Zen free-tier client fingerprint ---
-      # The free tier gates on the WHOLE official-client fingerprint; a request
-      # missing any one part is rejected with:
+      # The default values are based on OpenCode 2 CLI. An invalid session ID
+      # was verified to return:
       #   403 "OpenCode's free tier can only be used from within OpenCode"
       # When it applies, this block overrides user_agent above.
       fingerprint:
         enabled: true
-        user_agent: "opencode/1.18.31"   # must be opencode/>=1.17
-        client: "desktop"                # X-Opencode-Client
+        user_agent: "opencode/latest/2.0.28/cli"
+        client: "cli"                    # X-Opencode-Client
         project: "global"                # X-Opencode-Project
         accept: "text/event-stream"      # "" = leave Accept alone
         force_stream: true               # stream:false -> 403, even with valid headers
-        inject_tools: ["bash", "glob", "grep", "read"]
+        inject_tools: ["shell", "glob", "grep", "read"]
         strip_reasoning: true            # Responses: drop prior reasoning/encrypted_content
         strip_additional_tools: true     # Responses upstream: drop Codex additional_tools (400 otherwise)
         warn_missing_glue: true          # log the required credential headers: once per auth
