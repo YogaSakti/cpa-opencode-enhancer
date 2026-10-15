@@ -142,6 +142,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 				value = m.shapeSessionID(value)
 			}
 			resp.Headers.Set(cfg.Session.HeaderName, value)
+			resp.Headers.Set(HeaderOpenCodeSessionID, value)
 			logValues["session"] = value
 		case res.Source != "native":
 			value := sessionHeaderValue(res, cfg)
@@ -188,7 +189,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		}
 	}
 
-	// 3. Body shaping: stream, tool quartet (in the client's protocol), Responses hygiene.
+	// 3. Body shaping: stream, required tools (in the client's protocol), Responses hygiene.
 	bodyChanged := false
 	if fingerprint {
 		if fixed, changed := applyFingerprintBody(req.Body, cfg.Fingerprint, req.SourceFormat, req.ToFormat); changed {

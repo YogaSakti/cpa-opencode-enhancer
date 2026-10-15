@@ -65,7 +65,7 @@ plugins:
         project: "global"                # X-Opencode-Project
         accept: "text/event-stream"      # "" = leave Accept alone
         force_stream: true               # stream:false -> 403, even with valid headers
-        inject_tools: ["shell", "glob", "grep", "read"]
+        inject_tools: ["bash", "shell", "glob", "grep", "read"]
         strip_reasoning: true            # Responses: drop prior reasoning/encrypted_content
         strip_additional_tools: true     # Responses upstream: drop Codex additional_tools (400 otherwise)
         warn_missing_glue: true          # log the required credential headers: once per auth
@@ -87,21 +87,21 @@ plugins:
 # does not declare never reaches the wire, and a fingerprint missing one part
 # is a 403.
 #
-# Endpoints: /zen/v1/* is a proxy to /inference/openai/v1/* for oc_sk_ keys
-# (/zen/go/v1/* to /inference/go/openai/v1/*), so either prefix works as a
-# base-url. Never include /chat/completions or /responses; the executor adds it.
-#   https://opencode.ai/zen/v1  (= /inference/openai/v1)   chat + Responses (Muse)
+# Free chat currently uses /inference/v1; the older /zen/v1 and
+# /inference/openai/v1 paths return 403 FreeTierError for these models.
+# Never include /chat/completions or /responses; the executor adds it.
+#   https://opencode.ai/inference/v1   free chat + catalog
 #   https://opencode.ai/zen/go/v1  (= /inference/go/openai/v1)   Go subscription
-#   https://opencode.ai/inference/v1/models   catalog only
 # Keys look like oc_sk_… ; old sk-… keys were revoked.
 #
 # openai-compatibility:
 #   # FREE credential -- keep it free-only so aliases stay unambiguous.
 #   - name: "Opencode Free"
-#     base-url: "https://opencode.ai/inference/openai/v1"
+#     base-url: "https://opencode.ai/inference/v1"
 #     headers:
 #       User-Agent: "$X-Opencode-User-Agent"
 #       X-Opencode-Session: "$X-Opencode-Session"
+#       X-Opencode-Session-Id: "$X-Opencode-Session-Id"
 #       X-Opencode-Client: "$X-Opencode-Client"
 #       X-Opencode-Project: "$X-Opencode-Project"
 #       X-Opencode-Request: "$X-Opencode-Request"

@@ -122,7 +122,7 @@ func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 	}
 }
 
-// A Claude Messages body must get the quartet in Anthropic shape: the host's
+// A Claude Messages body must get the tools in Anthropic shape: the host's
 // Claude translators read tools[].name / input_schema, so a chat-shaped entry
 // reaches upstream nameless (400 on /responses, dropped then 403 on chat).
 func TestApplyFingerprintBodyClaudePath(t *testing.T) {
@@ -142,8 +142,8 @@ func TestApplyFingerprintBodyClaudePath(t *testing.T) {
 		t.Fatalf("stream = %v, want true", root["stream"])
 	}
 	tools := root["tools"].([]any)
-	if len(tools) != len(defaultFingerprintTools)+1 {
-		t.Fatalf("tools = %v, want the quartet plus the client's bash", tools)
+	if len(tools) != len(defaultFingerprintTools) {
+		t.Fatalf("tools = %v, want the default tools without duplicating the client's bash", tools)
 	}
 	for _, tool := range tools {
 		m := tool.(map[string]any)
@@ -444,6 +444,9 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	if got := resp.Headers.Get("x-opencode-session"); !isOpenCodeSessionID(got) {
 		t.Fatalf("x-opencode-session = %q, want the ses_ shape", got)
 	} else {
+		if resp.Headers.Get("X-Opencode-Session-Id") != got {
+			t.Fatal("X-Opencode-Session-Id must match x-opencode-session")
+		}
 		encoded, err := strconv.ParseUint(got[4:16], 16, 64)
 		if err != nil {
 			t.Fatalf("decode session timestamp: %v", err)
@@ -462,10 +465,24 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 		t.Fatalf("stream = %v, want true", body["stream"])
 	}
 	if len(body["tools"].([]any)) != len(defaultFingerprintTools) {
-		t.Fatalf("tools = %v, want the quartet", body["tools"])
+		t.Fatalf("tools = %v, want the default tools", body["tools"])
 	}
 	if _, ok := toolNames(t, body)["shell"]; !ok {
 		t.Fatal("OpenCode 2 shell tool missing from fingerprint")
+	}
+	if _, ok := toolNames(t, body)["bash"]; !ok {
+		t.Fatal("Zen-required bash tool missing from fingerprint")
+	}
+	for _, tool := range body["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		name := fn["name"].(string)
+		if name != "bash" && name != "read" {
+			continue
+		}
+		params := fn["parameters"].(map[string]any)
+		if len(params["properties"].(map[string]any)) == 0 {
+			t.Errorf("%s tool has an empty parameter schema", name)
+		}
 	}
 }
 

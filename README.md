@@ -65,7 +65,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the tested OpenCode 2 CLI fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, a timestamped `ses_…` session, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `shell/glob/grep/read` tools, declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
+| **Free-tier fingerprint** | `request.intercept_after` | Sends the OpenCode client fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, the same timestamped `ses_…` session in `x-opencode-session` and `x-opencode-session-id`, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/shell/glob/grep/read` tools with nonempty parameter schemas. Tools are declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values use a first-seen timestamp and hashed conversation identity; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
@@ -92,19 +92,18 @@ free-tier gate (`FreeTierError`) lives.
 | `POST /zen/go/v1/systemone` | `/go/systemone/v1/systemone` | Go subscription |
 | `GET /zen/go/v1/models`, `/usage` | `/go/v1/models`, `/go/v1/usage` | Go catalog, usage |
 
-A CLIProxyAPI `base-url` can therefore be either the public prefix or its
-inference equivalent. Never include `/chat/completions` or `/responses`: the
-executor appends them.
+For free chat models, use `/inference/v1`: the older `/zen/v1` and
+`/inference/openai/v1` chat paths returned `403 FreeTierError` on 2026-10-15.
+Never include `/chat/completions` or `/responses`: the executor appends them.
 
 | Use | `base-url` |
 | --- | --- |
-| Chat models | `https://opencode.ai/zen/v1` or `https://opencode.ai/inference/openai/v1` (verified 2026-09-19) |
-| Muse | the same two (`zen/v1` verified 2026-09-26) |
+| Free chat models | `https://opencode.ai/inference/v1` (verified 2026-10-15) |
+| Muse | `/responses` on the free endpoint; availability also depends on region |
 | Go subscription | `https://opencode.ai/zen/go/v1` or `https://opencode.ai/inference/go/openai/v1` |
 
-The catalog sits under a different prefix (`/inference/v1/models`), which is
-why `/inference/openai/v1/models` is a 404. That is harmless: CLIProxyAPI serves
-requests from the credential's own `models:` list.
+The free catalog is at `/inference/v1/models`. CLIProxyAPI serves requests from
+the credential's own `models:` list.
 
 The official client reads its provider base URLs from
 `models.opencode.ai/api.json` (`opencode` → `zen/v1`, `opencode-go` →
@@ -191,10 +190,11 @@ openai-compatibility:
   # FREE credential. Keep it free-only: mixing tiers on one credential is what
   # makes model names ambiguous when aliases drop the -free suffix.
   - name: "Opencode Free"
-    base-url: "https://opencode.ai/inference/openai/v1"
+    base-url: "https://opencode.ai/inference/v1"
     headers:
       User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Session-Id: "$X-Opencode-Session-Id"
       X-Opencode-Client: "$X-Opencode-Client"
       X-Opencode-Project: "$X-Opencode-Project"
       X-Opencode-Request: "$X-Opencode-Request"
@@ -202,7 +202,7 @@ openai-compatibility:
     api-key-entries:
       - api-key: "${OPENCODE_API_KEY}"   # oc_sk_…
     models:
-      - name: "mimo-v2.5-free"
+      - name: "mimo-v2.6-flash-free"
         alias: ""
       - name: "nemotron-3-ultra-free"
         alias: ""
@@ -328,7 +328,7 @@ plugins:
         project: "global"                 # X-Opencode-Project
         accept: "text/event-stream"       # "" to leave Accept alone
         force_stream: true                # stream:false is a 403 gate
-        inject_tools: ["shell", "glob", "grep", "read"]
+        inject_tools: ["bash", "shell", "glob", "grep", "read"]
         strip_reasoning: true             # Responses: drop prior reasoning items
         strip_additional_tools: true      # Responses upstream: drop Codex additional_tools items
         warn_missing_glue: true           # log required credential headers: once per auth

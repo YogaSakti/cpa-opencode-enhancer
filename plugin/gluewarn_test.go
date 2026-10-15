@@ -54,6 +54,7 @@ func TestGlueWarningFiresWithLoggingDisabled(t *testing.T) {
 		"openai-compatible-opencode zen",
 		`User-Agent: "$X-Opencode-User-Agent"`,
 		`X-Opencode-Session: "$X-Opencode-Session"`,
+		`X-Opencode-Session-Id: "$X-Opencode-Session-Id"`,
 		`X-Opencode-Client: "$X-Opencode-Client"`,
 		`X-Opencode-Project: "$X-Opencode-Project"`,
 		`X-Opencode-Request: "$X-Opencode-Request"`,

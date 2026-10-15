@@ -20,8 +20,9 @@ const (
 	// DefaultFingerprintAccept requests the SSE response forced by ForceStream.
 	DefaultFingerprintAccept = "text/event-stream"
 
-	HeaderOpenCodeProject = "X-Opencode-Project"
-	HeaderOpenCodeRequest = "X-Opencode-Request"
+	HeaderOpenCodeProject   = "X-Opencode-Project"
+	HeaderOpenCodeRequest   = "X-Opencode-Request"
+	HeaderOpenCodeSessionID = "X-Opencode-Session-Id"
 
 	sessionIDPrefix = "ses_"
 	requestIDPrefix = "msg_"
@@ -30,8 +31,8 @@ const (
 // base62Alphabet matches the official client's id alphabet.
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// defaultFingerprintTools is the smallest OpenCode 2 tool set verified with Zen.
-var defaultFingerprintTools = []string{"shell", "glob", "grep", "read"}
+// Zen requires bash and read; keep shell for clients already using that name.
+var defaultFingerprintTools = []string{"bash", "shell", "glob", "grep", "read"}
 
 // FingerprintConfig controls the OpenCode free-tier client fingerprint.
 type FingerprintConfig struct {
@@ -151,6 +152,7 @@ func requiredGlueHeaders(cfg Config) []string {
 	glue := []string{
 		"User-Agent: \"$" + ua + "\"",
 		http.CanonicalHeaderKey(session) + ": \"$" + http.CanonicalHeaderKey(session) + "\"",
+		HeaderOpenCodeSessionID + ": \"$" + HeaderOpenCodeSessionID + "\"",
 		DefaultIdentityHeader + ": \"$" + DefaultIdentityHeader + "\"",
 		HeaderOpenCodeProject + ": \"$" + HeaderOpenCodeProject + "\"",
 		HeaderOpenCodeRequest + ": \"$" + HeaderOpenCodeRequest + "\"",
@@ -337,7 +339,7 @@ func chatToolEntry(name string) map[string]any {
 		"function": map[string]any{
 			"name":        name,
 			"description": "OpenCode built-in " + name + " tool",
-			"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
 		},
 	}
 }
@@ -348,7 +350,7 @@ func responsesToolEntry(name string) map[string]any {
 		"type":        "function",
 		"name":        name,
 		"description": "OpenCode built-in " + name + " tool",
-		"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+		"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
 	}
 }
 
@@ -357,7 +359,7 @@ func claudeToolEntry(name string) map[string]any {
 	return map[string]any{
 		"name":         name,
 		"description":  "OpenCode built-in " + name + " tool",
-		"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
+		"input_schema": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
 	}
 }
 
@@ -392,7 +394,7 @@ func ensureGeminiTools(root map[string]any, names []string) bool {
 			missing = append(missing, map[string]any{
 				"name":        name,
 				"description": "OpenCode built-in " + name + " tool",
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
 			})
 			present[name] = struct{}{}
 		}
