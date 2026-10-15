@@ -92,9 +92,11 @@ free-tier gate (`FreeTierError`) lives.
 | `POST /zen/go/v1/systemone` | `/go/systemone/v1/systemone` | Go subscription |
 | `GET /zen/go/v1/models`, `/usage` | `/go/v1/models`, `/go/v1/usage` | Go catalog, usage |
 
-For free chat models, use `/inference/v1`: the older `/zen/v1` and
-`/inference/openai/v1` chat paths returned `403 FreeTierError` on 2026-10-15.
-Never include `/chat/completions` or `/responses`: the executor appends them.
+For free chat models, use `/inference/v1`. Re-measured on 2026-10-15, `/zen/v1`
+answers the same requests identically (`200` with the fingerprint, `403
+FreeTierError` without), so either base URL works as long as the fingerprint
+reaches the wire. Never include `/chat/completions` or `/responses`: the
+executor appends them.
 
 | Use | `base-url` |
 | --- | --- |
@@ -116,15 +118,15 @@ per-request `x-opencode-request` ID.
 
 Keys look like `oc_sk_…`; the old `sk-…` keys were revoked.
 
-Free models and the endpoint each one answers on, measured live on 2026-09-26
-(check `https://opencode.ai/zen/v1/models` for the current list):
+Free models and the endpoint each one answers on, measured live on 2026-10-15
+(check `https://opencode.ai/inference/v1/models` for the current list):
 
 | Endpoint | Models |
 | --- | --- |
-| `/chat/completions` | `big-pickle`, `space-bunny-free`, `mimo-v2.5-free`, `mimo-v2.6-flash-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` |
-| `/responses` | `muse-spark-1.3-contributor-free`, `muse-spark-1.2-contributor-free` (their `/chat/completions` answers 500) |
+| `/chat/completions` | `cat-jam-free`, `mimo-v2.6-flash-free`, `space-bunny-free`, `nemotron-3.5-lightning-free`, `longcat-2.5-preview-free`, `step-5-preview-free` (currently `429 Endpoint is unavailable`) |
+| `/responses` | `muse-spark-1.3-contributor-free`, `muse-spark-1.2-contributor-free` (their `/chat/completions` answers `400 ModelProtocolUnsupported`) |
 | not usable through CPA | `jev-1.13-free` — served on `/zen/v1/systemone`, returns typed decisions rather than text |
-| retired | `deepseek-v4-flash-free` — `400 Model is unavailable` |
+| retired | `big-pickle`, `deepseek-v4-flash-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `mimo-v2.5-free` — no longer in the catalog; a request answers `403 Model access is disabled` (not a `FreeTierError`, so re-adding the marker will not revive them) |
 
 ## Install
 
@@ -204,7 +206,7 @@ openai-compatibility:
     models:
       - name: "mimo-v2.6-flash-free"
         alias: ""
-      - name: "nemotron-3-ultra-free"
+      - name: "space-bunny-free"
         alias: ""
 
   # PAID credential. No fingerprint is applied, so it needs no glue beyond the
@@ -405,6 +407,45 @@ credential, plugin v0.5.2, the [Muse](#muse-responses-only) configuration above:
   `X-Opencode-Session: ses_f56b02280823mByoHc9xwFUV68`,
   `X-Opencode-Request: msg_0b86c8beb001HxblIuY7sPnQyp`, body `"stream":true`
   with the `bash/glob/grep/read` tools appended.
+
+**Ablation of the free-tier gate, 2026-10-15**, plugin v0.5.7, direct to
+`https://opencode.ai/inference/v1/chat/completions` with `mimo-v2.6-flash-free`
+and a real `oc_sk_…` key. Each row changes exactly one thing from a passing
+request; the plugin's own `intercept_after` output is what is sent.
+
+| Change | Result |
+| --- | --- |
+| fingerprint as the plugin emits it | **200** |
+| drop `X-Opencode-Session` | 403 |
+| drop `User-Agent` | 403 |
+| drop `X-Opencode-Session-Id` | 403 |
+| `X-Opencode-Session-Id` ≠ `X-Opencode-Session` | 403 |
+| `User-Agent` → `curl/8.7.1` | 403 |
+| session → a UUID | 403 |
+| drop `X-Opencode-Client` / `-Project` / `-Request` | **200** (not checked) |
+| drop `Authorization` | 403 |
+| body `stream:false` | 403 |
+| body without the `bash/glob/grep/read` quartet | 403 |
+| `stream:false` *and* no tools | 403 |
+
+So four things must hold together: an `opencode/…` User-Agent, a `ses_`-shaped
+session echoed identically in both session headers, `"stream":true`, and the
+tool quartet present. `x-opencode-client`/`-project`/`-request` are cosmetic.
+
+**Per-model matrix, 2026-10-15** (same key, same plugin path):
+
+| Model | `/chat/completions` | `/responses` |
+| --- | --- | --- |
+| `cat-jam-free`, `mimo-v2.6-flash-free`, `space-bunny-free`, `nemotron-3.5-lightning-free`, `longcat-2.5-preview-free` | 200 | 403 |
+| `step-5-preview-free` | 429 `Endpoint is unavailable` | 403 |
+| `muse-spark-1.2/1.3-contributor-free` | 400 `ModelProtocolUnsupported` | 200 |
+| `jev-1.13-free` | 400 `ModelProtocolUnsupported` | 403 |
+| `big-pickle` (retired) | 403 `Model access is disabled` | 403 |
+
+Paid stays untouched: `glm-5.3` is not reshaped (`fingerprint=false`, UA
+forwarded verbatim) and returns 200 on both `/inference/v1` and `/zen/go/v1`.
+Same-conversation determinism holds: two turns carrying the same
+`X-Session-Affinity` yield the same `ses_` id.
 
 Per-request observability via `host.log` is opt-in (`logging.enabled: true`):
 each shaped request logs `session_source`, `session`, `client_type`,

@@ -109,9 +109,9 @@ plugins:
 #     api-key-entries:
 #       - api-key: "${OPENCODE_API_KEY}"
 #     models:
-#       - name: "mimo-v2.5-free"
+#       - name: "mimo-v2.6-flash-free"
 #         alias: ""
-#       - name: "nemotron-3-ultra-free"
+#       - name: "space-bunny-free"
 #         alias: ""
 #
 #   # PAID credential -- never fingerprinted; zen/go/v1 only needs the session.

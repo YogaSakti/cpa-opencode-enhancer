@@ -6,6 +6,7 @@ dist/
 *.h
 
 # Local / editor
+.env
 .DS_Store
 *.swp
 .idea/
