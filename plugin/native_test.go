@@ -32,10 +32,13 @@ func TestNativeRegistrationAndAuthModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	caps := registered["capabilities"].(map[string]any)
-	for _, name := range []string{"auth_provider", "model_provider", "executor", "model_router", "request_lifecycle_plugin"} {
+	for _, name := range []string{"auth_provider", "model_provider", "executor", "request_lifecycle_plugin"} {
 		if caps[name] != true {
 			t.Errorf("capability %s = %v", name, caps[name])
 		}
+	}
+	if caps["model_router"] == true {
+		t.Fatal("native models must use CPA's normal provider selection, including shared model IDs")
 	}
 	if caps["executor_model_scope"] != "oauth" {
 		t.Errorf("scope = %v", caps["executor_model_scope"])
@@ -100,34 +103,6 @@ func TestNativeAuthRejectsUntrustedEndpointAndPaidModels(t *testing.T) {
 	unrelated := nativeCall(t, m, "auth.parse", map[string]any{"Provider": "other", "RawJSON": []byte(`{"type":"other"}`)})
 	if !unrelated.OK || !strings.Contains(string(unrelated.Result), `"Handled":false`) {
 		t.Fatalf("unrelated auth: %s", unrelated.Result)
-	}
-}
-
-func TestNativeRouterOnlyUsesRegisteredPluginAuthModels(t *testing.T) {
-	SetHostCaller(func(method string, payload []byte) ([]byte, error) {
-		if method != "host.auth.models" {
-			t.Fatalf("unexpected callback %s", method)
-		}
-		return OKEnvelope(map[string]any{"credentials": []any{map[string]any{"provider": PluginID, "models": []string{"mimo", "mimo-free"}}, map[string]any{"provider": "other", "models": []string{"other-free"}}}}), nil
-	})
-	defer SetHostCaller(nil)
-	m := NewManager()
-	for _, model := range []string{"mimo", "mimo-free", "other-free", "unconfigured-free"} {
-		envelope := nativeCall(t, m, "model.route", map[string]any{"RequestedModel": model})
-		if !envelope.OK {
-			t.Fatalf("route: %+v", envelope.Error)
-		}
-		var route struct {
-			Handled            bool
-			TargetKind, Target string
-		}
-		if err := json.Unmarshal(envelope.Result, &route); err != nil {
-			t.Fatal(err)
-		}
-		want := model == "mimo" || model == "mimo-free"
-		if route.Handled != want || want && (route.TargetKind != "provider" || route.Target != PluginID) {
-			t.Fatalf("route %s: %+v", model, route)
-		}
 	}
 }
 

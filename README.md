@@ -66,7 +66,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
-| Native free chat transport | `auth_provider`, `model_provider`, `model_router`, `executor` | Loads `opencode-enhancer` auth JSON, registers selected models and aliases, and sends requests directly to OpenCode with Go/uTLS. Uses CPA's existing credential selection and retry machinery. Requires no CPA patch or relay. |
+| Native free chat transport | `auth_provider`, `model_provider`, `executor` | Loads `opencode-enhancer` auth JSON, registers selected models and aliases, and sends requests directly to OpenCode with Go/uTLS. CPA's registry selects providers, so shared model IDs retain normal priority, rotation, and cooldown behavior. Requires no CPA patch or relay. |
 | **Free-tier fingerprint** | `request.intercept_after` | Sends the OpenCode client fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, the same timestamped `ses_…` session in `x-opencode-session` and `x-opencode-session-id`, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/shell/glob/grep/read` tools with nonempty parameter schemas. Tools are declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values use a first-seen timestamp and hashed conversation identity; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
@@ -192,7 +192,7 @@ Create `opencode-free.json` directly inside CPA's configured `auth-dir`:
   "api_key": "oc_sk_your-opencode-key",
   "base_url": "https://opencode.ai/inference/openai/v1",
   "models": [
-    {"name": "mimo-v2.6-flash-free", "alias": "opencode-mimo"}
+    {"name": "mimo-v2.6-flash-free", "alias": "opencode-free/mimo-v2.6-flash"}
   ]
 }
 ```
@@ -203,6 +203,8 @@ No `headers` glue is required for this native credential. Optional `label`,
 `prefix`, `disabled`, `headers`, and `proxy_url` fields are supported.
 Credential proxy settings take precedence over CPA's global proxy; otherwise
 the transport uses the process proxy environment.
+Direct connections to OpenCode use IPv4; explicitly configured proxies keep
+their own network routing. This does not change CPA's other providers.
 
 Use the matching Free Model Sync build to monitor this auth file, fetch the
 catalog, test models, and save the selected free set. It preserves the key,
@@ -633,6 +635,14 @@ Go TLS returned `429 FreeUsageLimitError`. Replacing only Go's TLS ClientHello
 with the captured Bun 1.4.4 profile through uTLS v1.8.2 returned HTTP 200, `OK`,
 and `[DONE]`. This error alone therefore does not establish exhausted quota.
 Updating the User-Agent or response-header passthrough toggle did not resolve it.
+
+A later controlled test found a separate network-family requirement: the same
+Go/uTLS request to the same hostname returned 429 over IPv6 and HTTP 200 with
+`OK` and `[DONE]` over IPv4. Standard Go TLS over IPv4 still returned 429 in the
+control test. Direct native OpenCode connections therefore use uTLS and IPv4,
+without pinning an upstream IP address. Configured proxies retain their own
+routing. HTTP header order and TCP coalescing were investigated but were not
+needed for the demonstrated fix.
 
 The plugin's native executor owns the OpenCode HTTP request and uses the
 measured uTLS profile. Keep the direct OpenCode base URL. Both plugins work

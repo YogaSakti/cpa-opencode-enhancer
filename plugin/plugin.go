@@ -59,7 +59,7 @@ func (m *Manager) HandleCall(method string, payload []byte) ([]byte, error) {
 		return emptyInterceptResponse(), nil
 	case MethodRequestInterceptAfter:
 		return m.handleInterceptAfter(payload)
-	case "auth.identifier", "auth.parse", "auth.login.start", "auth.login.poll", "auth.refresh", "model.static", "model.for_auth", "model.route", "executor.identifier", "executor.execute", "executor.execute_stream", "executor.count_tokens", "executor.http_request", "request.complete":
+	case "auth.identifier", "auth.parse", "auth.login.start", "auth.login.poll", "auth.refresh", "model.static", "model.for_auth", "executor.identifier", "executor.execute", "executor.execute_stream", "executor.count_tokens", "executor.http_request", "request.complete":
 		return m.handleNative(method, payload)
 	case MethodPluginShutdown, MethodPluginQuiesce:
 		m.mu.Lock()
@@ -242,8 +242,9 @@ func registration() Registration {
 			},
 		},
 		Capabilities: Capabilities{
+			// Per-auth registry entries let CPA select among providers sharing a model ID.
 			RequestInterceptor: true,
-			AuthProvider:       true, ModelProvider: true, ModelRouter: true, Executor: true,
+			AuthProvider:       true, ModelProvider: true, Executor: true,
 			ExecutorModelScope: "oauth", ExecutorInputFormats: []string{"chat-completions"}, ExecutorOutputFormats: []string{"chat-completions"},
 			RequestLifecyclePlugin: true,
 		},

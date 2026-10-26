@@ -61,6 +61,10 @@ func newNativeTransport(proxyURL string) (*http.Transport, error) {
 		if proxyEndpoint != nil && (proxyEndpoint.Scheme == "http" || proxyEndpoint.Scheme == "https") {
 			conn, err = nativeProxyConnect(ctx, proxyEndpoint, addr)
 		} else {
+			if host, _, parseErr := net.SplitHostPort(addr); proxyEndpoint == nil && parseErr == nil && strings.EqualFold(host, "opencode.ai") {
+				// Match Bun's IPv4 egress; this server's IPv6 path gets rejected upstream.
+				network = "tcp4"
+			}
 			conn, err = transport.DialContext(ctx, network, addr)
 		}
 		if err != nil {

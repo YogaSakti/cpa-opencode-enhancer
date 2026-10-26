@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -126,5 +127,41 @@ func TestNativeProxySentinelsAndWhitespace(t *testing.T) {
 	_ = json.Unmarshal(response.Result, &result)
 	if !response.OK || result.Auth.ProxyURL != "http://localhost:3128" || result.Auth.Attributes["proxy_url"] != "http://localhost:3128" {
 		t.Fatal("whitespace credential proxy bypassed global fallback")
+	}
+}
+
+func TestNativeTransportRestrictsOnlyDirectOpenCodeToIPv4(t *testing.T) {
+	for _, tc := range []struct{ proxy, host, network string }{
+		{"", "opencode.ai:443", "tcp4"},
+		{"direct://", "opencode.ai:443", "tcp4"},
+		{"none", "OPENCODE.AI:443", "tcp4"},
+		{"socks5://localhost:1080", "opencode.ai:443", "tcp"},
+		{"socks5h://localhost:1080", "opencode.ai:443", "tcp"},
+		{"", "example.org:443", "tcp"},
+	} {
+		t.Run(tc.proxy+tc.host, func(t *testing.T) {
+			transport, err := newNativeTransport(tc.proxy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer transport.CloseIdleConnections()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			called := false
+			transport.DialContext = func(got context.Context, network, addr string) (net.Conn, error) {
+				called = true
+				if got != ctx || got.Err() != context.Canceled {
+					t.Error("dial cancellation context changed")
+				}
+				if network != tc.network || addr != tc.host {
+					t.Errorf("dial(%q,%q), want(%q,%q)", network, addr, tc.network, tc.host)
+				}
+				return nil, got.Err()
+			}
+			_, err = transport.DialTLSContext(ctx, "tcp", tc.host)
+			if !called || !errors.Is(err, context.Canceled) {
+				t.Fatalf("dial cancellation lost: %v", err)
+			}
+		})
 	}
 }

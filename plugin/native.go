@@ -236,31 +236,6 @@ func (m *Manager) handleNative(method string, payload []byte) ([]byte, error) {
 			}
 		}
 		return OKEnvelope(map[string]any{"Provider": PluginID, "Models": models}), nil
-	case "model.route":
-		var req struct{ RequestedModel string }
-		if err := json.Unmarshal(payload, &req); err != nil {
-			return nil, err
-		}
-		var result struct {
-			Credentials []struct {
-				Provider string   `json:"provider"`
-				Models   []string `json:"models"`
-			} `json:"credentials"`
-		}
-		if err := nativeHostCall("host.auth.models", struct{}{}, &result); err != nil {
-			return OKEnvelope(map[string]any{"Handled": false}), nil
-		}
-		for _, auth := range result.Credentials {
-			if auth.Provider != PluginID {
-				continue
-			}
-			for _, model := range auth.Models {
-				if req.RequestedModel == model {
-					return OKEnvelope(map[string]any{"Handled": true, "TargetKind": "provider", "Target": PluginID, "TargetModel": model}), nil
-				}
-			}
-		}
-		return OKEnvelope(map[string]any{"Handled": false}), nil
 	case "executor.execute", "executor.execute_stream":
 		var req nativeExecutorRequest
 		if err := json.Unmarshal(payload, &req); err != nil {

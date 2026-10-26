@@ -61,7 +61,6 @@ type Capabilities struct {
 	RequestInterceptor     bool     `json:"request_interceptor"`
 	AuthProvider           bool     `json:"auth_provider"`
 	ModelProvider          bool     `json:"model_provider"`
-	ModelRouter            bool     `json:"model_router"`
 	Executor               bool     `json:"executor"`
 	ExecutorModelScope     string   `json:"executor_model_scope"`
 	ExecutorInputFormats   []string `json:"executor_input_formats"`
