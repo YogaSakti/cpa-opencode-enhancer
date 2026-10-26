@@ -192,7 +192,7 @@ Create `opencode-free.json` directly inside CPA's configured `auth-dir`:
   "api_key": "oc_sk_your-opencode-key",
   "base_url": "https://opencode.ai/inference/openai/v1",
   "models": [
-    {"name": "mimo-v2.6-flash-free", "alias": "opencode-free/mimo-v2.6-flash"}
+    {"name": "mimo-v2.6-flash-free", "alias": "mimo-v2.6-flash"}
   ]
 }
 ```
@@ -208,9 +208,15 @@ their own network routing. This does not change CPA's other providers.
 
 Use the matching Free Model Sync build to monitor this auth file, fetch the
 catalog, test models, and save the selected free set. It preserves the key,
-existing aliases, and unrelated JSON fields. Keep native model aliases distinct
-from other credentials. When migrating an old free-only compatibility entry,
-remove its duplicate free models after validating the native credential.
+existing aliases, and unrelated JSON fields. When migrating an old free-only
+compatibility entry, remove its duplicate free models after validating the
+native credential.
+
+Free Model Sync v0.11.0 and later provide an **Alias** field for each native
+model. Choose any supported alias; `opencode-free/` is not a required prefix.
+Leave the field blank to use the upstream model ID. Shared aliases across
+providers use CPA's normal provider selection; a distinct alias selects this
+provider explicitly.
 
 The native executor currently uses upstream Chat Completions. Muse models
 require upstream Responses and are rejected here. The native executor supports
