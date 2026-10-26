@@ -31,15 +31,19 @@ type Manager struct {
 	// header glue. Bounded by the number of credentials; reset on reconfigure.
 	warnedAuths map[string]struct{}
 	// shortcut: session IDs remain cached for the plugin lifetime; add expiry if session churn grows large.
-	sessionIDs map[[32]byte]string
+	sessionIDs     map[[32]byte]string
+	nativeRequests map[string]*nativeExecution
+	nativeClient   func(string) (*http.Client, error)
 }
 
 // NewManager returns a dispatcher with default configuration.
 func NewManager() *Manager {
 	return &Manager{
-		cfg:         DefaultConfig(),
-		warnedAuths: make(map[string]struct{}),
-		sessionIDs:  make(map[[32]byte]string),
+		cfg:            DefaultConfig(),
+		warnedAuths:    make(map[string]struct{}),
+		sessionIDs:     make(map[[32]byte]string),
+		nativeRequests: make(map[string]*nativeExecution),
+		nativeClient:   newNativeHTTPClient,
 	}
 }
 
@@ -55,8 +59,11 @@ func (m *Manager) HandleCall(method string, payload []byte) ([]byte, error) {
 		return emptyInterceptResponse(), nil
 	case MethodRequestInterceptAfter:
 		return m.handleInterceptAfter(payload)
+	case "auth.identifier", "auth.parse", "auth.login.start", "auth.login.poll", "auth.refresh", "model.static", "model.for_auth", "model.route", "executor.identifier", "executor.execute", "executor.execute_stream", "executor.count_tokens", "executor.http_request", "request.complete":
+		return m.handleNative(method, payload)
 	case MethodPluginShutdown, MethodPluginQuiesce:
 		m.mu.Lock()
+		m.cancelNativeRequests()
 		m.cfg = DefaultConfig()
 		m.warnedAuths = make(map[string]struct{})
 		m.sessionIDs = make(map[[32]byte]string)
@@ -84,6 +91,7 @@ func (m *Manager) handleLifecycle(payload []byte) ([]byte, error) {
 		return ErrEnvelope("invalid_config", err.Error()), nil
 	}
 	m.mu.Lock()
+	m.cancelNativeRequests()
 	m.cfg = cfg
 	m.warnedAuths = make(map[string]struct{})
 	m.mu.Unlock()
@@ -106,18 +114,25 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	cfg := m.cfg
 	m.mu.RUnlock()
 
-	if !isTarget(req, cfg) {
+	nativeAuth := strings.HasPrefix(metadataString(req.Metadata, "selected_auth_id"), PluginID+":")
+	if !nativeAuth && !isTarget(req, cfg) {
 		logSkip(req)
 		return emptyInterceptResponse(), nil
 	}
 
 	resp := RequestInterceptResponse{Headers: http.Header{}}
+	if nativeAuth && req.RequestID != "" {
+		resp.Headers.Set(nativeExecutionIDHeader, req.RequestID)
+	}
+	if nativeAuth {
+		resp.Headers.Set(nativeSourceFormatHeader, req.SourceFormat)
+	}
 	logValues := map[string]string{}
 
 	// Use the tested OpenCode client fingerprint for Zen free-tier requests.
 	fingerprint := fingerprintApplies(req, cfg)
 	logValues["fingerprint"] = strconv.FormatBool(fingerprint)
-	if fingerprint {
+	if fingerprint && !nativeAuth {
 		m.warnGlueRequirement(metadataString(req.Metadata, "selected_auth_id"), cfg)
 	}
 
@@ -209,7 +224,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 // registration returns the plugin.register result.
 func registration() Registration {
 	return Registration{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Metadata: Metadata{
 			Name:             PluginID,
 			Version:          PluginVersion,
@@ -228,6 +243,9 @@ func registration() Registration {
 		},
 		Capabilities: Capabilities{
 			RequestInterceptor: true,
+			AuthProvider:       true, ModelProvider: true, ModelRouter: true, Executor: true,
+			ExecutorModelScope: "oauth", ExecutorInputFormats: []string{"chat-completions"}, ExecutorOutputFormats: []string{"chat-completions"},
+			RequestLifecyclePlugin: true,
 		},
 	}
 }

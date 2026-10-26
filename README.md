@@ -1,8 +1,9 @@
 # opencode-enhancer
 
 CLIProxyAPI native plugin that makes the **OpenCode free tier** usable through
-CLIProxyAPI, for chat models (`openai-compatibility` credentials) and for the
-Responses-only Muse models (`codex-api-key` credentials).
+CLIProxyAPI. Free chat models use the plugin's own Go/uTLS executor and native
+`opencode-enhancer` credentials. Existing `openai-compatibility` and
+`codex-api-key` credentials retain the interceptor behavior described below.
 
 OpenCode checks the client request before serving free-tier models. In a live
 test, an invalid session ID returned:
@@ -65,6 +66,7 @@ accepted this disclaimer.
 
 | Feature | Hook | Behavior |
 | --- | --- | --- |
+| Native free chat transport | `auth_provider`, `model_provider`, `model_router`, `executor` | Loads `opencode-enhancer` auth JSON, registers selected models and aliases, and sends requests directly to OpenCode with Go/uTLS. Uses CPA's existing credential selection and retry machinery. Requires no CPA patch or relay. |
 | **Free-tier fingerprint** | `request.intercept_after` | Sends the OpenCode client fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, the same timestamped `ses_…` session in `x-opencode-session` and `x-opencode-session-id`, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/shell/glob/grep/read` tools with nonempty parameter schemas. Tools are declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values use a first-seen timestamp and hashed conversation identity; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
@@ -179,7 +181,43 @@ journalctl -u cliproxyapi --no-pager -n 40 | grep opencode-enhancer
 # pluginhost: plugin loaded plugin_id=opencode-enhancer version=...
 ```
 
-### 4. Add the credential glue (required)
+### 4. Add a native free-chat credential
+
+The native executor was tested with the unchanged CLIProxyAPI 8.0.43 binary.
+Create `opencode-free.json` directly inside CPA's configured `auth-dir`:
+
+```json
+{
+  "type": "opencode-enhancer",
+  "api_key": "oc_sk_your-opencode-key",
+  "base_url": "https://opencode.ai/inference/openai/v1",
+  "models": [
+    {"name": "mimo-v2.6-flash-free", "alias": "opencode-mimo"}
+  ]
+}
+```
+
+Restrict the file to the CPA service account (`chmod 600` on Linux). This JSON
+contains the actual key; it does not expand shell environment variables.
+No `headers` glue is required for this native credential. Optional `label`,
+`prefix`, `disabled`, `headers`, and `proxy_url` fields are supported.
+Credential proxy settings take precedence over CPA's global proxy; otherwise
+the transport uses the process proxy environment.
+
+Use the matching Free Model Sync build to monitor this auth file, fetch the
+catalog, test models, and save the selected free set. It preserves the key,
+existing aliases, and unrelated JSON fields. Keep native model aliases distinct
+from other credentials. When migrating an old free-only compatibility entry,
+remove its duplicate free models after validating the native credential.
+
+The native executor currently uses upstream Chat Completions. Muse models
+require upstream Responses and are rejected here. The native executor supports
+streaming and assembled non-streaming replies; CPA handles client protocol
+translation. OAuth login, token counting, and arbitrary HTTP requests are not
+implemented by this provider. Per-request proxy overrides are not exposed by
+CPA's plugin executor ABI.
+
+### Existing compatibility credentials: header glue
 
 The plugin injects headers into the *execution headers*. Built-in executors
 only put headers on the wire that are declared in the credential's `headers:`
@@ -509,7 +547,9 @@ name at all: target it with `target.models`.
 
 ## Known limitations
 
-- **Muse requires a Responses credential.** The plugin can shape a Muse
+- **Native credentials support upstream Chat Completions.** Muse is rejected
+  by the native provider and excluded from its Free Model Sync selection.
+- **Legacy Muse requires a Responses credential.** The interceptor can shape a Muse
   request but cannot change the executor CLIProxyAPI selects. Configure Muse
   under `codex-api-key`, not `openai-compatibility`; see
   [Muse](#muse-responses-only).
@@ -526,12 +566,12 @@ name at all: target it with `target.models`.
   disable this. This covers what the separate `muse-tools-stripper` plugin
   does, so you do not need both; if that plugin runs first, it discards the
   function declarations before this one can promote them.
-- **`force_stream: true` breaks non-streaming clients.** The free tier rejects
+- **Legacy `force_stream: true` breaks non-streaming clients.** The free tier rejects
   `stream: false` outright, so the plugin flips it; a client that asked for a
   non-streamed response then gets SSE the executor does not expect. Those
   requests would have 403'd anyway. Set `fingerprint.force_stream: false` if
   you would rather keep the client's own choice and lose the free tier.
-- **Translated requests keep the client's own stream flag.** When
+- **Legacy translated requests keep the client's own stream flag.** When
   CLIProxyAPI translates between protocols (a Claude or Gemini client to an
   OpenAI upstream), the translator takes `stream` from the original request,
   not from the body the plugin returns (`openai_claude_request.go`). A
@@ -542,10 +582,11 @@ name at all: target it with `target.models`.
   ID format track OpenCode 2.0.28. UA and tools can be overridden in config;
   an ID-format change needs a plugin update.
 
-## Why the credential glue cannot be dropped
+## Why legacy credentials need header glue
 
-No plugin hook can put a header on the wire. Read against CLIProxyAPI v7.3.8,
-the request path is:
+An interceptor cannot put a header on the built-in executor's wire by itself.
+The native plugin executor sets its own headers and needs no glue. For legacy
+credentials, read against CLIProxyAPI v7.3.8, the request path is:
 
 1. `request.intercept_before` / `request.intercept_after` return `Headers`,
    which `mergeRequestInterceptorHeaders` merges into `opts.Headers`
@@ -579,6 +620,37 @@ credential the first time it fingerprints a request. That line bypasses
   rename it) drops the watch: later edits are ignored, with no log line, until
   the service restarts. Edit the file in place, and confirm a
   `config file changed, reloading` line after each change.
+
+## OpenCode transport (2026-10-26)
+
+The free-tier request also needs an environment block containing `Working directory:`.
+The plugin preserves the client's existing environment and instructions. If no
+environment was supplied, it adds `<env>\nWorking directory: not provided\n</env>`
+in the source protocol's system context; it does not send a made-up filesystem path.
+
+On the tested Linux host, the same request completed through Bun while standard
+Go TLS returned `429 FreeUsageLimitError`. Replacing only Go's TLS ClientHello
+with the captured Bun 1.4.4 profile through uTLS v1.8.2 returned HTTP 200, `OK`,
+and `[DONE]`. This error alone therefore does not establish exhausted quota.
+Updating the User-Agent or response-header passthrough toggle did not resolve it.
+
+The plugin's native executor owns the OpenCode HTTP request and uses the
+measured uTLS profile. Keep the direct OpenCode base URL. Both plugins work
+inside the unchanged CPA process, without a loopback relay or Bun service.
+Legacy compatibility credentials still use CPA's built-in TLS transport;
+adding interceptor headers alone does not switch them to the native executor.
+
+The native plugin was tested on unchanged CPA 8.0.43 on 2026-10-26 with a real
+`mimo-v2.6-flash-free` request and an auth file containing no header glue.
+Chat Completions returned HTTP 200, text `OK`, and `[DONE]`. Responses, Claude,
+and Gemini client streams also returned `OK` with their protocol's completion
+event; a non-streaming Chat request returned an assembled JSON completion.
+
+Use the matching patched free-model-sync build for the environment context and
+visible-text-plus-completion probe checks. A 128-token chat probe gives reasoning
+models room to produce visible output; a 200 stream containing only reasoning
+does not pass. The TLS profile follows the measured Bun version and may need
+refreshing if upstream client requirements change.
 
 ## Development
 

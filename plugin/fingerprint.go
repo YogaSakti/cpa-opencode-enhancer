@@ -270,12 +270,12 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig, sourceFormat, toFo
 		return body, false
 	}
 	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
+	if err := json.Unmarshal(body, &root); err != nil || root == nil {
 		return body, false
 	}
 
-	changed := false
 	source := strings.ToLower(strings.TrimSpace(sourceFormat))
+	changed := ensureEnvironment(root, source)
 
 	// Gate: stream:false is rejected with 403 even when every header is right.
 	// Gemini carries streaming in the URL, not the body.
@@ -330,6 +330,107 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig, sourceFormat, toFo
 		return body, false
 	}
 	return out, true
+}
+
+const fallbackEnvironment = "<env>\nWorking directory: not provided\n</env>"
+
+// Zen also checks the environment context; never invent a client's path.
+func ensureEnvironment(root map[string]any, source string) bool {
+	if _, responses := root["input"]; responses {
+		if hasEnvironment(root["instructions"]) || messagesHaveEnvironment(root["input"]) {
+			return false
+		}
+		instructions, ok := root["instructions"].(string)
+		if root["instructions"] != nil && !ok {
+			return false
+		}
+		root["instructions"] = appendEnvironment(instructions)
+		return true
+	}
+	switch source {
+	case "claude":
+		if hasEnvironment(root["system"]) {
+			return false
+		}
+		switch system := root["system"].(type) {
+		case nil:
+			root["system"] = fallbackEnvironment
+		case string:
+			root["system"] = appendEnvironment(system)
+		case []any:
+			root["system"] = append(system, map[string]any{"type": "text", "text": fallbackEnvironment})
+		default:
+			return false
+		}
+	case "gemini":
+		key := "systemInstruction"
+		if _, exists := root[key]; !exists {
+			if _, exists := root["system_instruction"]; exists {
+				key = "system_instruction"
+			}
+		}
+		system, ok := root[key].(map[string]any)
+		if root[key] != nil && !ok || hasEnvironment(system) {
+			return false
+		}
+		if system == nil {
+			system = map[string]any{}
+		}
+		parts, ok := system["parts"].([]any)
+		if system["parts"] != nil && !ok {
+			return false
+		}
+		system["parts"] = append(parts, map[string]any{"text": fallbackEnvironment})
+		root[key] = system
+	default:
+		if messagesHaveEnvironment(root["messages"]) {
+			return false
+		}
+		messages, ok := root["messages"].([]any)
+		if root["messages"] != nil && !ok {
+			return false
+		}
+		root["messages"] = append([]any{map[string]any{"role": "system", "content": fallbackEnvironment}}, messages...)
+	}
+	return true
+}
+
+func appendEnvironment(text string) string {
+	if text == "" {
+		return fallbackEnvironment
+	}
+	return text + "\n\n" + fallbackEnvironment
+}
+
+func messagesHaveEnvironment(value any) bool {
+	messages, _ := value.([]any)
+	for _, raw := range messages {
+		message, _ := raw.(map[string]any)
+		if (message["role"] == "system" || message["role"] == "developer") && hasEnvironment(message["content"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvironment(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.Contains(v, "<env>") && strings.Contains(v, "Working directory:")
+	case []any:
+		for _, item := range v {
+			if hasEnvironment(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range v {
+			if hasEnvironment(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // chatToolEntry builds a Chat Completions tool declaration.

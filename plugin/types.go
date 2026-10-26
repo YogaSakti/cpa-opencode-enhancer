@@ -14,8 +14,10 @@ type Envelope struct {
 
 // EnvelopeError carries an error code and message.
 type EnvelopeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	HTTPStatus        int    `json:"http_status,omitempty"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
 }
 
 // RequestInterceptRequest mirrors the fields of pluginapi.RequestInterceptRequest
@@ -56,7 +58,15 @@ type ConfigField struct {
 
 // Capabilities declares the plugin's supported integration points.
 type Capabilities struct {
-	RequestInterceptor bool `json:"request_interceptor"`
+	RequestInterceptor     bool     `json:"request_interceptor"`
+	AuthProvider           bool     `json:"auth_provider"`
+	ModelProvider          bool     `json:"model_provider"`
+	ModelRouter            bool     `json:"model_router"`
+	Executor               bool     `json:"executor"`
+	ExecutorModelScope     string   `json:"executor_model_scope"`
+	ExecutorInputFormats   []string `json:"executor_input_formats"`
+	ExecutorOutputFormats  []string `json:"executor_output_formats"`
+	RequestLifecyclePlugin bool     `json:"request_lifecycle_plugin"`
 }
 
 // Registration is the plugin.register / plugin.reconfigure result.

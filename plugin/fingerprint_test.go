@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,6 +120,117 @@ func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 	}
 	if _, changed := applyFingerprintBody(first, cfg, "", ""); changed {
 		t.Fatal("second pass rewrote an already-shaped body")
+	}
+}
+
+func TestFingerprintAddsEnvironmentWithoutReplacingClientInstructions(t *testing.T) {
+	const context = "<env>\nWorking directory: not provided\n</env>"
+	for _, tc := range []struct {
+		name, source, body string
+	}{
+		{"chat", "openai", `{"messages":[{"role":"system","content":"Keep client instructions."},{"role":"user","content":"hi"}]}`},
+		{"responses", "openai-response", `{"instructions":"Keep client instructions.","input":"hi"}`},
+		{"claude string", "claude", `{"system":"Keep client instructions.","messages":[{"role":"user","content":"hi"}]}`},
+		{"claude blocks", "claude", `{"system":[{"type":"text","text":"Keep client instructions.","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}]}`},
+		{"gemini", "gemini", `{"systemInstruction":{"parts":[{"text":"Keep client instructions."}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _ := applyFingerprintBody([]byte(tc.body), defaultFingerprintConfig(), tc.source, "openai")
+			var root map[string]any
+			if err := json.Unmarshal(out, &root); err != nil {
+				t.Fatal(err)
+			}
+			var got string
+			switch tc.source {
+			case "openai":
+				messages := root["messages"].([]any)
+				for _, raw := range messages {
+					message := raw.(map[string]any)
+					if message["role"] == "system" {
+						got += message["content"].(string)
+					}
+				}
+				if messages[len(messages)-1].(map[string]any)["content"] != "hi" {
+					t.Fatal("user message changed")
+				}
+			case "openai-response":
+				got, _ = root["instructions"].(string)
+			case "claude":
+				if text, ok := root["system"].(string); ok {
+					got = text
+				} else {
+					blocks := root["system"].([]any)
+					for _, block := range blocks {
+						got += block.(map[string]any)["text"].(string)
+					}
+					if blocks[0].(map[string]any)["cache_control"] == nil {
+						t.Fatal("client cache control was lost")
+					}
+				}
+			case "gemini":
+				for _, part := range root["systemInstruction"].(map[string]any)["parts"].([]any) {
+					got += part.(map[string]any)["text"].(string)
+				}
+			}
+			if !strings.Contains(got, context) || !strings.Contains(got, "Keep client instructions.") {
+				t.Fatalf("system context = %q, want environment and original instructions", got)
+			}
+			if _, changed := applyFingerprintBody(out, defaultFingerprintConfig(), tc.source, "openai"); changed {
+				t.Fatal("environment was added more than once")
+			}
+		})
+	}
+}
+
+func TestFingerprintPreservesExistingEnvironment(t *testing.T) {
+	in := []byte(`{"messages":[{"role":"system","content":"<env>\nWorking directory: /client/work\n</env>"},{"role":"user","content":"hi"}]}`)
+	out, _ := applyFingerprintBody(in, defaultFingerprintConfig(), "openai", "openai")
+	if strings.Contains(string(out), "not provided") || !strings.Contains(string(out), "/client/work") {
+		t.Fatalf("client environment was replaced: %s", out)
+	}
+}
+
+func TestFingerprintPreservesGeminiSnakeCaseInstructions(t *testing.T) {
+	for _, original := range []string{"Keep client instructions.", "<env>\nWorking directory: /client/work\n</env>"} {
+		t.Run(original, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"system_instruction": map[string]any{"role": "system", "parts": []any{map[string]any{"text": original}}},
+				"contents":           []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, _ := applyFingerprintBody(body, defaultFingerprintConfig(), "gemini", "openai")
+			var root map[string]any
+			if err := json.Unmarshal(out, &root); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := root["systemInstruction"]; exists {
+				t.Fatal("new camelCase field shadows the client's snake_case instructions")
+			}
+			system := root["system_instruction"].(map[string]any)
+			parts := system["parts"].([]any)
+			if system["role"] != "system" || parts[0].(map[string]any)["text"] != original {
+				t.Fatal("client system context changed")
+			}
+			if original == "Keep client instructions." {
+				if len(parts) != 2 || parts[1].(map[string]any)["text"] != "<env>\nWorking directory: not provided\n</env>" {
+					t.Fatalf("missing fallback in original snake_case field: %s", out)
+				}
+			} else if len(parts) != 1 {
+				t.Fatal("client environment was replaced or duplicated")
+			}
+			if _, changed := applyFingerprintBody(out, defaultFingerprintConfig(), "gemini", "openai"); changed {
+				t.Fatal("second pass changed Gemini context")
+			}
+		})
+	}
+}
+
+func TestFingerprintLeavesNullBodyForUpstreamValidation(t *testing.T) {
+	body := []byte(`null`)
+	if out, changed := applyFingerprintBody(body, defaultFingerprintConfig(), "openai", "openai"); changed || string(out) != "null" {
+		t.Fatalf("null body was rewritten: %s", out)
 	}
 }
 

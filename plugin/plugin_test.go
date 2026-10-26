@@ -68,8 +68,8 @@ func TestRegistrationAdvertisesCapabilities(t *testing.T) {
 	env := mustCall(t, m, MethodPluginRegister, LifecycleRequest{})
 	reg := decodeResult[Registration](t, env)
 
-	if reg.SchemaVersion != 1 {
-		t.Fatalf("schema_version = %d, want 1", reg.SchemaVersion)
+	if reg.SchemaVersion != 2 {
+		t.Fatalf("schema_version = %d, want 2", reg.SchemaVersion)
 	}
 	if !reg.Capabilities.RequestInterceptor {
 		t.Fatalf("capabilities = %+v, want request_interceptor and scheduler", reg.Capabilities)
