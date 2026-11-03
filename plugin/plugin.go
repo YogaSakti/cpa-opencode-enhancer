@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"cpa-opencode-enhancer/internal/opencodefingerprint"
 )
 
 // RPC method names (pluginabi constants, kept local to stay SDK-free).
@@ -131,6 +133,10 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 
 	// Use the tested OpenCode client fingerprint for Zen free-tier requests.
 	fingerprint := fingerprintApplies(req, cfg)
+	project := fingerprintValue(cfg.Fingerprint.Project, headerGet(req.Headers, HeaderOpenCodeProject))
+	if fingerprint {
+		resp.ClearHeaders = []string{"X-Opencode-Request"}
+	}
 	logValues["fingerprint"] = strconv.FormatBool(fingerprint)
 	if fingerprint && !nativeAuth {
 		m.warnGlueRequirement(metadataString(req.Metadata, "selected_auth_id"), cfg)
@@ -142,10 +148,14 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 	// the official ses_ shape is reshaped, because upstream rejects anything
 	// else.
 	res, haveSession := resolveSessionID(req, cfg, cfg.Session.HeaderName)
-	if !haveSession && fingerprint && req.RequestID != "" {
+	if !haveSession && fingerprint {
 		// Last resort: upstream needs *some* ses_ id. Not sticky, but a
 		// per-request session beats a hard 403.
-		res = sessionResult{Value: req.RequestID, Source: "request", Stable: false}
+		id := req.RequestID
+		if id == "" {
+			id = newRequestID()
+		}
+		res = sessionResult{Value: id, Source: "request", Stable: false}
 		haveSession = true
 	}
 	if haveSession {
@@ -156,14 +166,19 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 			if !isOpenCodeSessionID(value) {
 				value = m.shapeSessionID(value)
 			}
+			for name, values := range opencodefingerprint.Headers(value, project) {
+				resp.Headers[name] = values
+			}
 			resp.Headers.Set(cfg.Session.HeaderName, value)
-			resp.Headers.Set(HeaderOpenCodeSessionID, value)
 			logValues["session"] = value
 		case res.Source != "native":
 			value := sessionHeaderValue(res, cfg)
 			resp.Headers.Set(cfg.Session.HeaderName, value)
 			logValues["session"] = value
 		default:
+			if cleanSession(headerGet(req.Headers, cfg.Session.HeaderName)) == "" {
+				resp.Headers.Set(cfg.Session.HeaderName, res.Value)
+			}
 			logValues["session"] = "native (preserved)"
 		}
 	}
@@ -183,8 +198,7 @@ func (m *Manager) handleInterceptAfter(payload []byte) ([]byte, error) {
 		resp.Headers.Set(DefaultIdentityHeader,
 			fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient))
 		resp.Headers.Set(HeaderOpenCodeProject,
-			fingerprintValue(cfg.Fingerprint.Project, DefaultFingerprintProject))
-		resp.Headers.Set(HeaderOpenCodeRequest, newRequestID())
+			opencodefingerprint.ProjectID(project))
 		if accept := strings.TrimSpace(cfg.Fingerprint.Accept); accept != "" {
 			resp.Headers.Set("Accept", accept)
 		}

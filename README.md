@@ -67,7 +67,7 @@ accepted this disclaimer.
 | Feature | Hook | Behavior |
 | --- | --- | --- |
 | Native free chat transport | `auth_provider`, `model_provider`, `executor` | Loads `opencode-enhancer` auth JSON, registers selected models and aliases, and sends requests directly to OpenCode with Go/uTLS. CPA's registry selects providers, so shared model IDs retain normal priority, rotation, and cooldown behavior. Requires no CPA patch or relay. |
-| **Free-tier fingerprint** | `request.intercept_after` | Sends the OpenCode client fingerprint: `User-Agent: opencode/latest/2.0.28/cli`, `X-Opencode-Client: cli`, `X-Opencode-Project: global`, the same timestamped `ses_…` session in `x-opencode-session` and `x-opencode-session-id`, a fresh `msg_…` request id, `Accept: text/event-stream`, forced `stream: true`, and the `bash/shell/glob/grep/read` tools with nonempty parameter schemas. Tools are declared in the client's own protocol (OpenAI Chat, Responses, Anthropic Messages or Gemini) so CLIProxyAPI's translators carry them upstream. On the Responses path it also sets `store: false`, drops prior-turn `reasoning` / `encrypted_content`, and removes Codex `additional_tools` input items (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
+| **Free-tier fingerprint** | Native executor and `request.intercept_after` | Sends `User-Agent: opencode/latest/2.2.5/cli`, `X-Opencode-Client: cli`, a stable 40-character project hash, matching `ses_…` IDs in `X-Opencode-Session`, `X-Opencode-Session-Id`, `X-Session-Affinity`, and `X-Session-Id`, matching per-request `b3` / `traceparent`, and `Accept: application/json, text/event-stream`. Forces streaming and adds missing `edit/glob/grep/read/shell` declarations in the client's protocol with realistic argument schemas. Injected tools are explicitly marked unavailable; existing client tools stay intact. Responses also gets `store: false` and prior reasoning / unsupported `additional_tools` cleanup (see [Known limitations](#known-limitations)). Applies to free-tier models only; paid builds are untouched. |
 | Session injection | `request.intercept_after` | Resolves a stable session id from the client's own session headers (Codex `Session-Id`/`Thread-Id`, Claude Code `X-Claude-Code-Session-Id`, DeepSeek Harness, OpenCode native, CPA `canonical_session_id`, body-content hash fallback) and injects it as `x-opencode-session`. Derived values use a first-seen timestamp and hashed conversation identity; a native OpenCode session is never overridden. |
 | Client identity | `request.intercept_after` | Injects `X-Opencode-Client` when the client identified itself (`codex`, `claude-code`, `opencode`). **Unidentified clients get no identity header at all** — omitting beats sending a self-identifying proxy label. |
 | User-Agent rewrite | `request.intercept_after` | **Dynamic by default**: forwards the client's own User-Agent (real name + real version, never stale). Generic SDK/HTTP-library UAs (`Go-http-client`, `curl/`, `axios`, `OpenAI/Python`, …) are replaced with a **neutral** agent UA (`coding-agent/1.0`, configurable) that carries no proxy marker. Applies to the paid path only; the fingerprint path overrides it. |
@@ -115,8 +115,8 @@ The official client reads its provider base URLs from
 `@ai-sdk/openai` → `/responses`, `@ai-sdk/openai-compatible` →
 `/chat/completions`, `@ai-sdk/anthropic` → `/messages`. In a captured OpenCode
 2.0.28 CLI request it sent `x-opencode-project`, `x-opencode-session`,
-`x-opencode-client` and `User-Agent`; the plugin supplies these headers and a
-per-request `x-opencode-request` ID.
+`x-opencode-client` and `User-Agent`. Version 0.6.2 uses the pinned 2.2.5
+profile described above and no longer emits `x-opencode-request`.
 
 Keys look like `oc_sk_…`; the old `sk-…` keys were revoked.
 
@@ -162,8 +162,8 @@ nothing to place by hand.
 
 ### 3. Enable it in `config.yaml`
 
-Everything is optional except `enabled`. The defaults are the verified
-free-tier values; this is a complete, working configuration for chat models:
+Everything is optional except `enabled`. The defaults use the fingerprint
+described above; this is the minimal plugin configuration for chat models:
 
 ```yaml
 plugins:
@@ -243,9 +243,12 @@ openai-compatibility:
       User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Session: "$X-Opencode-Session"
       X-Opencode-Session-Id: "$X-Opencode-Session-Id"
+      X-Session-Affinity: "$X-Session-Affinity"
+      X-Session-Id: "$X-Session-Id"
       X-Opencode-Client: "$X-Opencode-Client"
       X-Opencode-Project: "$X-Opencode-Project"
-      X-Opencode-Request: "$X-Opencode-Request"
+      B3: "$B3"
+      Traceparent: "$Traceparent"
       Accept: "$Accept"
     api-key-entries:
       - api-key: "${OPENCODE_API_KEY}"   # oc_sk_…
@@ -271,6 +274,12 @@ openai-compatibility:
 `$Name` copies the value from the (plugin-augmented) execution headers; when
 absent the header is omitted.
 
+When upgrading an existing compatibility credential, remove its
+`X-Opencode-Request` entry and add both affinity headers plus `B3` and
+`Traceparent` as shown above. The interceptor clears the obsolete request
+execution header through CPA's `ClearHeaders` support. Native credentials
+need no glue and ignore old `X-Opencode-Request` mappings.
+
 If you alias free models to drop the `-free` suffix, make sure the alias does
 not collide with a paid model of the same name on another credential — the
 tier that serves the request then depends on scheduling, and the billing
@@ -292,8 +301,12 @@ codex-api-key:
       User-Agent: "$X-Opencode-User-Agent"
       X-Opencode-Client: "$X-Opencode-Client"
       X-Opencode-Session: "$X-Opencode-Session"
+      X-Opencode-Session-Id: "$X-Opencode-Session-Id"
+      X-Session-Affinity: "$X-Session-Affinity"
+      X-Session-Id: "$X-Session-Id"
       X-Opencode-Project: "$X-Opencode-Project"
-      X-Opencode-Request: "$X-Opencode-Request"
+      B3: "$B3"
+      Traceparent: "$Traceparent"
       Accept: "$Accept"
     models:
       - name: "muse-spark-1.3-contributor-free"
@@ -371,12 +384,12 @@ plugins:
 
       fingerprint:
         enabled: true                     # send the official client fingerprint
-        user_agent: "opencode/latest/2.0.28/cli"
+        user_agent: "opencode/latest/2.2.5/cli"
         client: "cli"                     # X-Opencode-Client
-        project: "global"                 # X-Opencode-Project
-        accept: "text/event-stream"       # "" to leave Accept alone
+        project: ""                       # SHA-1 of the actual process cwd by default
+        accept: "application/json, text/event-stream"
         force_stream: true                # stream:false is a 403 gate
-        inject_tools: ["bash", "shell", "glob", "grep", "read"]
+        inject_tools: ["edit", "glob", "grep", "read", "shell"]
         strip_reasoning: true             # Responses: drop prior reasoning items
         strip_additional_tools: true      # Responses upstream: drop Codex additional_tools items
         warn_missing_glue: true           # log required credential headers: once per auth
@@ -474,7 +487,7 @@ request; the plugin's own `intercept_after` output is what is sent.
 | body without the `bash/glob/grep/read` quartet | 403 |
 | `stream:false` *and* no tools | 403 |
 
-So four things must hold together: an `opencode/…` User-Agent, a `ses_`-shaped
+In that dated profile, four things had to hold together: an `opencode/…` User-Agent, a `ses_`-shaped
 session echoed identically in both session headers, `"stream":true`, and the
 tool quartet present. `x-opencode-client`/`-project`/`-request` are cosmetic.
 
@@ -587,8 +600,9 @@ name at all: target it with `target.models`.
   FreeTierError`. Claude Code always streams; Gemini clients must use
   `:streamGenerateContent`.
 - **The fingerprint is a moving target.** The default UA, tools, and session
-  ID format track OpenCode 2.0.28. UA and tools can be overridden in config;
-  an ID-format change needs a plugin update.
+  ID format currently target the pinned OpenCode 2.2.5 profile. UA, Accept,
+  project, and tools can be overridden in config; an ID-format change needs
+  a plugin update. No automatic upstream-version updater is included.
 
 ## Why legacy credentials need header glue
 
@@ -632,9 +646,17 @@ credential the first time it fingerprints a request. That line bypasses
 ## OpenCode transport (2026-10-26)
 
 The free-tier request also needs an environment block containing `Working directory:`.
-The plugin preserves the client's existing environment and instructions. If no
-environment was supplied, it adds `<env>\nWorking directory: not provided\n</env>`
-in the source protocol's system context; it does not send a made-up filesystem path.
+The plugin preserves the client's existing environment and instructions. Since
+v0.6.2, when no environment was supplied, it appends a coding-agent marker and
+`<env>` with the actual plugin process working directory to existing system or
+developer context. It only creates a system message when none exists; if the
+process directory cannot be resolved, it uses `/workspace`. The project header
+preserves a configured lowercase 40-character hash or hashes
+`opencode-project\0` followed by the selected project. An explicit configured
+project wins; otherwise the client's `X-Opencode-Project` is used, followed by
+a native auth header value and finally the process directory. Native Chat
+requests also set `stream_options.include_usage: true`
+while preserving other stream options and generation limits.
 
 On the tested Linux host, the same request completed through Bun while standard
 Go TLS returned `429 FreeUsageLimitError`. Replacing only Go's TLS ClientHello

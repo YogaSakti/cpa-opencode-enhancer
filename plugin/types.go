@@ -36,8 +36,9 @@ type RequestInterceptRequest struct {
 
 // RequestInterceptResponse mirrors pluginapi.RequestInterceptResponse.
 type RequestInterceptResponse struct {
-	Headers http.Header `json:"Headers,omitempty"`
-	Body    []byte      `json:"Body,omitempty"`
+	Headers      http.Header `json:"Headers,omitempty"`
+	ClearHeaders []string    `json:"ClearHeaders,omitempty"`
+	Body         []byte      `json:"Body,omitempty"`
 }
 
 // Metadata mirrors pluginapi.Metadata.

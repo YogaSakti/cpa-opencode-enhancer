@@ -57,7 +57,10 @@ func TestGlueWarningFiresWithLoggingDisabled(t *testing.T) {
 		`X-Opencode-Session-Id: "$X-Opencode-Session-Id"`,
 		`X-Opencode-Client: "$X-Opencode-Client"`,
 		`X-Opencode-Project: "$X-Opencode-Project"`,
-		`X-Opencode-Request: "$X-Opencode-Request"`,
+		`X-Session-Affinity: "$X-Session-Affinity"`,
+		`X-Session-Id: "$X-Session-Id"`,
+		`B3: "$B3"`,
+		`Traceparent: "$Traceparent"`,
 		`Accept: "$Accept"`,
 	} {
 		if !strings.Contains(line, want) {
@@ -111,7 +114,7 @@ func TestRequiredGlueHeadersFollowConfig(t *testing.T) {
 			t.Errorf("glue does not name %q: %s", want, glue)
 		}
 	}
-	if strings.Contains(glue, "Accept") {
-		t.Errorf("Accept listed although fingerprint.accept is empty: %s", glue)
+	if !strings.Contains(glue, `Accept: "$Accept"`) {
+		t.Errorf("default Accept glue missing for an empty override: %s", glue)
 	}
 }

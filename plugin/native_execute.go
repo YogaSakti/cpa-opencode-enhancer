@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"cpa-opencode-enhancer/internal/opencodefingerprint"
 )
 
 func (m *Manager) executeNative(req nativeExecutorRequest, stream bool) []byte {
@@ -45,6 +47,12 @@ func (m *Manager) executeNative(req nativeExecutorRequest, stream bool) []byte {
 	}
 	root["model"] = model
 	root["stream"] = true
+	options, _ := root["stream_options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+	}
+	options["include_usage"] = true
+	root["stream_options"] = options
 	body, err := json.Marshal(root)
 	if err != nil {
 		return nativeError("invalid_request", "invalid Chat Completions request body", 400)
@@ -64,11 +72,7 @@ func (m *Manager) executeNative(req nativeExecutorRequest, stream bool) []byte {
 		headers.Set(name, value)
 	}
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "text/event-stream")
 	headers.Set("Authorization", "Bearer "+strings.TrimSpace(auth.APIKey))
-	headers.Set("User-Agent", fingerprintValue(cfg.Fingerprint.UserAgent, DefaultFingerprintUA))
-	headers.Set(DefaultIdentityHeader, fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient))
-	headers.Set(HeaderOpenCodeProject, fingerprintValue(cfg.Fingerprint.Project, DefaultFingerprintProject))
 	identity, ok := resolveSessionID(RequestInterceptRequest{SourceFormat: "openai", Body: req.Payload, Headers: req.Headers, Metadata: req.Metadata}, cfg, cfg.Session.HeaderName)
 	if !ok {
 		identity.Value = newRequestID()
@@ -76,9 +80,16 @@ func (m *Manager) executeNative(req nativeExecutorRequest, stream bool) []byte {
 	if !isOpenCodeSessionID(identity.Value) {
 		identity.Value = m.shapeSessionID(identity.Value)
 	}
+	project := fingerprintValue(cfg.Fingerprint.Project, headerGet(req.Headers, HeaderOpenCodeProject))
+	project = fingerprintValue(project, headers.Get(HeaderOpenCodeProject))
+	for name, values := range opencodefingerprint.Headers(identity.Value, project) {
+		headers[name] = values
+	}
+	headers.Set("User-Agent", fingerprintValue(cfg.Fingerprint.UserAgent, DefaultFingerprintUA))
+	headers.Set("Accept", fingerprintValue(cfg.Fingerprint.Accept, DefaultFingerprintAccept))
+	headers.Set(DefaultIdentityHeader, fingerprintValue(cfg.Fingerprint.Client, DefaultFingerprintClient))
 	headers.Set(cfg.Session.HeaderName, identity.Value)
-	headers.Set(HeaderOpenCodeSessionID, identity.Value)
-	headers.Set(HeaderOpenCodeRequest, newRequestID())
+	headers.Del("X-Opencode-Request")
 	headers.Del(nativeExecutionIDHeader)
 	headers.Del(nativeSourceFormatHeader)
 	for _, name := range []string{"Host", "Content-Length", "Transfer-Encoding", "Proxy-Authorization", "Proxy-Connection", "Connection", "Keep-Alive", "Trailer", "Upgrade"} {

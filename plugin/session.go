@@ -36,6 +36,11 @@ func resolveSessionID(req RequestInterceptRequest, cfg Config, headerName string
 			return sessionResult{Value: cleaned, Source: "native", Stable: true}, true
 		}
 	}
+	if v, ok := headerValue(req.Headers, HeaderOpenCodeSessionID); ok {
+		if cleaned := cleanSession(v); cleaned != "" {
+			return sessionResult{Value: cleaned, Source: "native", Stable: true}, true
+		}
+	}
 
 	// 2. Configured source headers.
 	for _, src := range cfg.Session.SourceHeaders {

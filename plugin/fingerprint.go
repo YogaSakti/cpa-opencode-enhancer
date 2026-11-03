@@ -9,19 +9,20 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"cpa-opencode-enhancer/internal/opencodefingerprint"
 )
 
 // OpenCode Zen free-tier client fingerprint, based on a tested OpenCode 2 CLI
 // request. A valid timestamped session ID is required to avoid FreeTierError.
 const (
-	DefaultFingerprintUA      = "opencode/latest/2.0.28/cli"
+	DefaultFingerprintUA      = opencodefingerprint.UserAgent
 	DefaultFingerprintClient  = "cli"
-	DefaultFingerprintProject = "global"
+	DefaultFingerprintProject = ""
 	// DefaultFingerprintAccept requests the SSE response forced by ForceStream.
-	DefaultFingerprintAccept = "text/event-stream"
+	DefaultFingerprintAccept = opencodefingerprint.Accept
 
 	HeaderOpenCodeProject   = "X-Opencode-Project"
-	HeaderOpenCodeRequest   = "X-Opencode-Request"
 	HeaderOpenCodeSessionID = "X-Opencode-Session-Id"
 
 	sessionIDPrefix = "ses_"
@@ -31,8 +32,7 @@ const (
 // base62Alphabet matches the official client's id alphabet.
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// Zen requires bash and read; keep shell for clients already using that name.
-var defaultFingerprintTools = []string{"bash", "shell", "glob", "grep", "read"}
+var defaultFingerprintTools = opencodefingerprint.ToolNames()
 
 // FingerprintConfig controls the OpenCode free-tier client fingerprint.
 type FingerprintConfig struct {
@@ -151,14 +151,18 @@ func requiredGlueHeaders(cfg Config) []string {
 	}
 	glue := []string{
 		"User-Agent: \"$" + ua + "\"",
-		http.CanonicalHeaderKey(session) + ": \"$" + http.CanonicalHeaderKey(session) + "\"",
+		"X-Opencode-Session: \"$X-Opencode-Session\"",
 		HeaderOpenCodeSessionID + ": \"$" + HeaderOpenCodeSessionID + "\"",
+		"X-Session-Affinity: \"$X-Session-Affinity\"",
+		"X-Session-Id: \"$X-Session-Id\"",
 		DefaultIdentityHeader + ": \"$" + DefaultIdentityHeader + "\"",
 		HeaderOpenCodeProject + ": \"$" + HeaderOpenCodeProject + "\"",
-		HeaderOpenCodeRequest + ": \"$" + HeaderOpenCodeRequest + "\"",
+		"B3: \"$B3\"",
+		"Traceparent: \"$Traceparent\"",
+		"Accept: \"$Accept\"",
 	}
-	if strings.TrimSpace(cfg.Fingerprint.Accept) != "" {
-		glue = append(glue, "Accept: \"$Accept\"")
+	if !strings.EqualFold(session, "X-Opencode-Session") {
+		glue = append(glue, http.CanonicalHeaderKey(session)+": \"$"+http.CanonicalHeaderKey(session)+"\"")
 	}
 	return glue
 }
@@ -332,9 +336,7 @@ func applyFingerprintBody(body []byte, cfg FingerprintConfig, sourceFormat, toFo
 	return out, true
 }
 
-const fallbackEnvironment = "<env>\nWorking directory: not provided\n</env>"
-
-// Zen also checks the environment context; never invent a client's path.
+// Keep client context intact and append real plugin process context if absent.
 func ensureEnvironment(root map[string]any, source string) bool {
 	if _, responses := root["input"]; responses {
 		if hasEnvironment(root["instructions"]) || messagesHaveEnvironment(root["input"]) {
@@ -354,11 +356,11 @@ func ensureEnvironment(root map[string]any, source string) bool {
 		}
 		switch system := root["system"].(type) {
 		case nil:
-			root["system"] = fallbackEnvironment
+			root["system"] = opencodefingerprint.Environment()
 		case string:
 			root["system"] = appendEnvironment(system)
 		case []any:
-			root["system"] = append(system, map[string]any{"type": "text", "text": fallbackEnvironment})
+			root["system"] = append(system, map[string]any{"type": "text", "text": opencodefingerprint.Environment()})
 		default:
 			return false
 		}
@@ -380,7 +382,7 @@ func ensureEnvironment(root map[string]any, source string) bool {
 		if system["parts"] != nil && !ok {
 			return false
 		}
-		system["parts"] = append(parts, map[string]any{"text": fallbackEnvironment})
+		system["parts"] = append(parts, map[string]any{"text": opencodefingerprint.Environment()})
 		root[key] = system
 	default:
 		if messagesHaveEnvironment(root["messages"]) {
@@ -390,16 +392,33 @@ func ensureEnvironment(root map[string]any, source string) bool {
 		if root["messages"] != nil && !ok {
 			return false
 		}
-		root["messages"] = append([]any{map[string]any{"role": "system", "content": fallbackEnvironment}}, messages...)
+		for _, raw := range messages {
+			message, _ := raw.(map[string]any)
+			if message["role"] != "system" && message["role"] != "developer" {
+				continue
+			}
+			switch content := message["content"].(type) {
+			case nil:
+				message["content"] = opencodefingerprint.Environment()
+			case string:
+				message["content"] = appendEnvironment(content)
+			case []any:
+				message["content"] = append(content, map[string]any{"type": "text", "text": opencodefingerprint.Environment()})
+			default:
+				return false
+			}
+			return true
+		}
+		root["messages"] = append([]any{map[string]any{"role": "system", "content": opencodefingerprint.Environment()}}, messages...)
 	}
 	return true
 }
 
 func appendEnvironment(text string) string {
 	if text == "" {
-		return fallbackEnvironment
+		return opencodefingerprint.Environment()
 	}
-	return text + "\n\n" + fallbackEnvironment
+	return text + "\n\n" + opencodefingerprint.Environment()
 }
 
 func messagesHaveEnvironment(value any) bool {
@@ -439,8 +458,8 @@ func chatToolEntry(name string) map[string]any {
 		"type": "function",
 		"function": map[string]any{
 			"name":        name,
-			"description": "OpenCode built-in " + name + " tool",
-			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+			"description": opencodefingerprint.ToolDescription,
+			"parameters":  opencodefingerprint.ToolSchema(name),
 		},
 	}
 }
@@ -450,8 +469,8 @@ func responsesToolEntry(name string) map[string]any {
 	return map[string]any{
 		"type":        "function",
 		"name":        name,
-		"description": "OpenCode built-in " + name + " tool",
-		"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+		"description": opencodefingerprint.ToolDescription,
+		"parameters":  opencodefingerprint.ToolSchema(name),
 	}
 }
 
@@ -459,8 +478,8 @@ func responsesToolEntry(name string) map[string]any {
 func claudeToolEntry(name string) map[string]any {
 	return map[string]any{
 		"name":         name,
-		"description":  "OpenCode built-in " + name + " tool",
-		"input_schema": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+		"description":  opencodefingerprint.ToolDescription,
+		"input_schema": opencodefingerprint.ToolSchema(name),
 	}
 }
 
@@ -494,8 +513,8 @@ func ensureGeminiTools(root map[string]any, names []string) bool {
 		if _, ok := present[name]; !ok {
 			missing = append(missing, map[string]any{
 				"name":        name,
-				"description": "OpenCode built-in " + name + " tool",
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+				"description": opencodefingerprint.ToolDescription,
+				"parameters":  opencodefingerprint.ToolSchema(name),
 			})
 			present[name] = struct{}{}
 		}

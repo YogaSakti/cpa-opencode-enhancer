@@ -109,6 +109,10 @@ func (m *Manager) decodeNativeAuth(raw []byte) (nativeAuth, error) {
 		}
 	}
 	for name, value := range auth.Headers {
+		if strings.EqualFold(name, "X-Opencode-Request") {
+			delete(auth.Headers, name)
+			continue
+		}
 		if !validNativeHeader(name, value) {
 			return auth, errors.New("invalid OpenCode custom header")
 		}

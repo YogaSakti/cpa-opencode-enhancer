@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,7 +125,11 @@ func TestApplyFingerprintBodyIsIdempotent(t *testing.T) {
 }
 
 func TestFingerprintAddsEnvironmentWithoutReplacingClientInstructions(t *testing.T) {
-	const context = "<env>\nWorking directory: not provided\n</env>"
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := "<env>\nWorking directory: " + cwd + "\n</env>"
 	for _, tc := range []struct {
 		name, source, body string
 	}{
@@ -214,7 +219,11 @@ func TestFingerprintPreservesGeminiSnakeCaseInstructions(t *testing.T) {
 				t.Fatal("client system context changed")
 			}
 			if original == "Keep client instructions." {
-				if len(parts) != 2 || parts[1].(map[string]any)["text"] != "<env>\nWorking directory: not provided\n</env>" {
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(parts) != 2 || !strings.Contains(parts[1].(map[string]any)["text"].(string), "<env>\nWorking directory: "+cwd+"\n</env>") {
 					t.Fatalf("missing fallback in original snake_case field: %s", out)
 				}
 			} else if len(parts) != 1 {
@@ -254,8 +263,8 @@ func TestApplyFingerprintBodyClaudePath(t *testing.T) {
 		t.Fatalf("stream = %v, want true", root["stream"])
 	}
 	tools := root["tools"].([]any)
-	if len(tools) != len(defaultFingerprintTools) {
-		t.Fatalf("tools = %v, want the default tools without duplicating the client's bash", tools)
+	if len(tools) != len(defaultFingerprintTools)+1 {
+		t.Fatalf("tools = %v, want the default tools plus the client's bash", tools)
 	}
 	for _, tool := range tools {
 		m := tool.(map[string]any)
@@ -541,17 +550,17 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if got := resp.Headers.Get("User-Agent"); got != "opencode/latest/2.0.28/cli" {
+	if got := resp.Headers.Get("User-Agent"); got != "opencode/latest/2.2.5/cli" {
 		t.Fatalf("User-Agent = %q, want OpenCode 2 CLI UA", got)
 	}
 	if got := resp.Headers.Get("X-Opencode-Client"); got != "cli" {
 		t.Fatalf("X-Opencode-Client = %q, want cli", got)
 	}
-	if got := resp.Headers.Get("X-Opencode-Project"); got != DefaultFingerprintProject {
-		t.Fatalf("X-Opencode-Project = %q, want %q", got, DefaultFingerprintProject)
+	if got := resp.Headers.Get("X-Opencode-Project"); !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(got) {
+		t.Fatalf("X-Opencode-Project = %q, want a project SHA-1", got)
 	}
-	if got := resp.Headers.Get("X-Opencode-Request"); got == "" {
-		t.Fatal("X-Opencode-Request is missing")
+	if got := resp.Headers.Get("X-Opencode-Request"); got != "" {
+		t.Fatal("deprecated X-Opencode-Request was injected")
 	}
 	if got := resp.Headers.Get("x-opencode-session"); !isOpenCodeSessionID(got) {
 		t.Fatalf("x-opencode-session = %q, want the ses_ shape", got)
@@ -582,13 +591,13 @@ func TestInterceptAfterFreeTierFingerprint(t *testing.T) {
 	if _, ok := toolNames(t, body)["shell"]; !ok {
 		t.Fatal("OpenCode 2 shell tool missing from fingerprint")
 	}
-	if _, ok := toolNames(t, body)["bash"]; !ok {
-		t.Fatal("Zen-required bash tool missing from fingerprint")
+	if _, ok := toolNames(t, body)["edit"]; !ok {
+		t.Fatal("OpenCode edit tool missing from fingerprint")
 	}
 	for _, tool := range body["tools"].([]any) {
 		fn := tool.(map[string]any)["function"].(map[string]any)
 		name := fn["name"].(string)
-		if name != "bash" && name != "read" {
+		if name != "shell" && name != "read" {
 			continue
 		}
 		params := fn["parameters"].(map[string]any)
